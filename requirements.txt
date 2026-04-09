@@ -24,3 +24,4 @@ scikit-image
 ftfy
 jupyter
 clearml[s3]
+boto3
