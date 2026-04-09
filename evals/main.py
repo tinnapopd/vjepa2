@@ -167,9 +167,13 @@ if __name__ == "__main__":
         print(f"Dataset downloaded to: {dataset_path}")
 
         # Override data paths in config with downloaded dataset
-        if "data" in params:
-            train_csv = params["data"].get("dataset_train", "")
-            val_csv = params["data"].get("dataset_val", "")
+        data_params = params.get("experiment", {}).get("data")
+        if data_params is None:
+            data_params = params.get("data")
+            
+        if data_params is not None:
+            train_csv = data_params.get("dataset_train", "")
+            val_csv = data_params.get("dataset_val", "")
 
             train_basename = (
                 os.path.basename(train_csv) if train_csv else "train.csv"
@@ -222,10 +226,10 @@ if __name__ == "__main__":
                 print(f"  Rewrote video paths in {csv_path}")
 
             if os.path.exists(new_train):
-                params["data"]["dataset_train"] = new_train
+                data_params["dataset_train"] = new_train
                 print(f"  dataset_train -> {new_train}")
             if os.path.exists(new_val):
-                params["data"]["dataset_val"] = new_val
+                data_params["dataset_val"] = new_val
                 print(f"  dataset_val -> {new_val}")
 
         # Re-write the config so spawned workers pick up the new paths
