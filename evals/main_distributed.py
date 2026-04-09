@@ -45,7 +45,7 @@ parser.add_argument(
     "--fname",
     type=str,
     help="yaml file containing config file names to launch",
-    default="configs.yaml",
+    default="configs/custom-vjepa2_1.yaml",
 )
 parser.add_argument(
     "--account",

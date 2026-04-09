@@ -33,6 +33,9 @@ from src.utils.checkpoint_loader import robust_checkpoint_loader
 from src.utils.distributed import AllReduce, init_distributed
 from src.utils.logging import AverageMeter, CSVLogger
 
+from clearml import Logger as ClearMLLogger, Task as ClearMLTask, OutputModel
+
+
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -61,6 +64,7 @@ def main(args_eval, resume_preempt=False):
     resume_checkpoint = args_eval.get("resume_checkpoint", False) or resume_preempt
     eval_tag = args_eval.get("tag", None)
     num_workers = args_eval.get("num_workers", 12)
+    snapshot_freq = args_eval.get("snapshot_freq", 0)
 
     # -- PRETRAIN
     args_pretrain = args_eval.get("model_kwargs")
@@ -273,11 +277,55 @@ def main(args_eval, resume_preempt=False):
         logger.info("[%5d] train: %.3f%% test: %.3f%%" % (epoch + 1, train_acc, val_acc))
         if rank == 0:
             csv_logger.log(epoch + 1, train_acc, val_acc)
+            clearml_logger = ClearMLLogger.current_logger()
+            if clearml_logger:
+                clearml_logger.report_scalar(
+                    "Accuracy", "Train", value=train_acc, iteration=epoch + 1
+                )
+                clearml_logger.report_scalar(
+                    "Accuracy",
+                    "Validation",
+                    value=val_acc,
+                    iteration=epoch + 1,
+                )
 
         if val_only:
             return
 
         save_checkpoint(epoch + 1)
+
+        # Upload model snapshot to ClearML every snapshot_freq epochs
+        if (
+            rank == 0
+            and snapshot_freq > 0
+            and (epoch + 1) % snapshot_freq == 0
+        ):
+            current_task = ClearMLTask.current_task()
+            if current_task and os.path.exists(latest_path):
+                snapshot_model = OutputModel(
+                    task=current_task,
+                    name=f"{eval_tag or 'classifier'}-e{epoch + 1}",
+                )
+                snapshot_model.update_weights(
+                    weights_filename=latest_path,
+                    auto_delete_file=False,
+                )
+                logger.info(
+                    f"Uploaded snapshot model (epoch {epoch + 1}) to ClearML"
+                )
+
+    # Upload trained model to ClearML
+    if rank == 0:
+        current_task = ClearMLTask.current_task()
+        if current_task and os.path.exists(latest_path):
+            current_task.update_output_model(
+                model_path=latest_path,
+                model_name=f"{eval_tag or 'classifier'}",
+                auto_delete_file=False,
+            )
+            logger.info("Uploaded trained model to ClearML")
+            current_task.flush(wait_for_uploads=True)
+            logger.info("ClearML upload flush complete")
 
 
 def run_one_epoch(
