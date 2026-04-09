@@ -17,7 +17,6 @@ from decord import cpu, VideoReader
 
 from src.datasets.utils.dataloader import (
     ConcatIndices,
-    MonitoredDataset,
     NondeterministicDataLoader,
 )
 from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
@@ -72,14 +71,6 @@ def make_videodataset(
     log_dir = pathlib.Path(log_dir) if log_dir else None
     if log_dir:
         log_dir.mkdir(parents=True, exist_ok=True)
-        # Worker ID will replace '%w'
-        resource_log_filename = log_dir / f"resource_file_{rank}_%w.csv"
-        dataset = MonitoredDataset(
-            dataset=dataset,
-            log_filename=str(resource_log_filename),
-            log_interval=10.0,
-            monitor_interval=5.0,
-        )
 
     logger.info("VideoDataset dataset created")
     if datasets_weights is not None:
@@ -177,7 +168,6 @@ class VideoDataset(torch.utils.data.Dataset):
         samples, labels = [], []
         self.num_samples_per_dataset = []
         for data_path in self.data_paths:
-
             if data_path[-4:] == ".csv":
                 try:
                     data = pd.read_csv(data_path, header=None, delimiter=" ")
@@ -204,7 +194,9 @@ class VideoDataset(torch.utils.data.Dataset):
         self.sample_weights = None
         if self.datasets_weights is not None:
             self.sample_weights = []
-            for dw, ns in zip(self.datasets_weights, self.num_samples_per_dataset):
+            for dw, ns in zip(
+                self.datasets_weights, self.num_samples_per_dataset
+            ):
                 self.sample_weights += [dw / ns] * ns
 
         self.samples = samples
@@ -333,7 +325,6 @@ class VideoDataset(torch.utils.data.Dataset):
 
         all_indices, clip_indices = [], []
         for i in range(self.num_clips):
-
             if partition_len > clip_len:
                 # If partition_len > clip len, then sample a random window of
                 # clip_len frames within the segment
@@ -342,7 +333,9 @@ class VideoDataset(torch.utils.data.Dataset):
                     end_indx = np.random.randint(clip_len, partition_len)
                 start_indx = end_indx - clip_len
                 indices = np.linspace(start_indx, end_indx, num=fpc)
-                indices = np.clip(indices, start_indx, end_indx - 1).astype(np.int64)
+                indices = np.clip(indices, start_indx, end_indx - 1).astype(
+                    np.int64
+                )
                 # --
                 indices = indices + i * partition_len
             else:
@@ -350,14 +343,19 @@ class VideoDataset(torch.utils.data.Dataset):
                 # then repeatedly append the last frame in the segment until
                 # we reach the desired clip length
                 if not self.allow_clip_overlap:
-                    indices = np.linspace(0, partition_len, num=partition_len // fstp)
+                    indices = np.linspace(
+                        0, partition_len, num=partition_len // fstp
+                    )
                     indices = np.concatenate(
                         (
                             indices,
-                            np.ones(fpc - partition_len // fstp) * partition_len,
+                            np.ones(fpc - partition_len // fstp)
+                            * partition_len,
                         )
                     )
-                    indices = np.clip(indices, 0, partition_len - 1).astype(np.int64)
+                    indices = np.clip(indices, 0, partition_len - 1).astype(
+                        np.int64
+                    )
                     # --
                     indices = indices + i * partition_len
 
@@ -365,18 +363,24 @@ class VideoDataset(torch.utils.data.Dataset):
                 # then start_indx of segment i+1 will lie within segment i
                 else:
                     sample_len = min(clip_len, len(vr)) - 1
-                    indices = np.linspace(0, sample_len, num=sample_len // fstp)
+                    indices = np.linspace(
+                        0, sample_len, num=sample_len // fstp
+                    )
                     indices = np.concatenate(
                         (
                             indices,
                             np.ones(fpc - sample_len // fstp) * sample_len,
                         )
                     )
-                    indices = np.clip(indices, 0, sample_len - 1).astype(np.int64)
+                    indices = np.clip(indices, 0, sample_len - 1).astype(
+                        np.int64
+                    )
                     # --
                     clip_step = 0
                     if len(vr) > clip_len:
-                        clip_step = (len(vr) - clip_len) // (self.num_clips - 1)
+                        clip_step = (len(vr) - clip_len) // (
+                            self.num_clips - 1
+                        )
                     indices = indices + i * clip_step
 
             clip_indices.append(indices)

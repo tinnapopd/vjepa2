@@ -13,7 +13,6 @@ import torch
 from torch.utils.data import _utils
 from torch.utils.data.dataloader import ExceptionWrapper, _DatasetKind, _MultiProcessingDataLoaderIter
 
-from src.utils.monitoring import ResourceMonitoringThread
 
 
 class ConcatIndices:
@@ -37,108 +36,6 @@ class ConcatIndices:
         return dataset_idx, idx - self.cumulative_sizes[dataset_idx - 1]
 
 
-class CSVLogger(object):
-    """An append-to CSV abstraction. File I/O requires a flush."""
-
-    def __init__(self, fname, header):
-        """Write header to internal buffers."""
-        self.fname = fname
-        self.buffer = io.StringIO()
-        self.writer = csv.writer(self.buffer, quoting=csv.QUOTE_NONNUMERIC)
-        self.writer.writerow(header)
-        self.initialized = False
-
-    def writerow(self, row) -> None:
-        """Write row to internal buffers."""
-        self.writer.writerow(row)
-
-    def flush(self) -> None:
-        """Flush buffer to file."""
-        # Overwrite old file
-        mode = "a+" if self.initialized else "w"
-
-        with open(self.fname, mode, newline="") as f:
-            f.write(self.buffer.getvalue())
-
-        self.buffer = io.StringIO()
-        self.writer = csv.writer(self.buffer, quoting=csv.QUOTE_NONNUMERIC)
-        self.initialized = True
-
-
-class MonitoredDataset(torch.utils.data.Dataset):
-    """Implement resource monitoring on a per-worker basis.
-
-    The sampling occurs every monitor_interval seconds and writes the log
-    every log_interval seconds to a file specified by log_filename, which
-    maps a worker id to a file using the '%w' placeholder.
-
-    Warning: Do not call this dataset before it is consumed in the DataLoader.
-    """
-
-    def __init__(
-        self, dataset: torch.utils.data.Dataset, log_filename: str, log_interval: float, monitor_interval: float
-    ):
-        self.dataset = dataset
-        self.log_filename = str(log_filename)
-        self.log_interval = log_interval
-        self.monitor_interval = monitor_interval
-        self._csv_log = None
-        self._monitoring_thread = None
-        self._last_log_time = None
-        # Patch getitems dynamically
-        if hasattr(self.dataset, "__getitems__") and self.dataset.__getitems__:
-
-            def __getitems__(self, index):
-                self.maybe_start_resource_monitoring()
-                return self.dataset.__getitems__(index)
-
-            self.__getitems__ = __getitems__
-
-    def __del__(self):
-        self.stop_resource_monitoring()
-
-    def __getitem__(self, index):
-        self.maybe_start_resource_monitoring()
-        return self.dataset.__getitem__(index)
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def _elapsed_log_time(self):
-        if self._last_log_time is None:
-            return float("inf")
-        else:
-            return time.perf_counter() - self._last_log_time
-
-    def _update_log_time(self):
-        self._last_log_time = time.perf_counter()
-
-    def maybe_start_resource_monitoring(self):
-        if self._monitoring_thread is None:
-
-            def callback_fn(resource_sample):
-                worker_info = torch.utils.data.get_worker_info()
-                worker_id = worker_info.id
-
-                if self._csv_log is None:
-                    header = [f.name for f in resource_sample.fields()]
-                    log_filename = self.log_filename.replace("%w", str(worker_id))
-                    self._csv_log = CSVLogger(log_filename, header)
-                row_values = resource_sample.as_tuple()
-                self._csv_log.writerow(row_values)
-
-                if self._elapsed_log_time() > self.log_interval:
-                    self._csv_log.flush()
-                    self._update_log_time()
-
-            self._monitoring_thread = ResourceMonitoringThread(
-                None, self.monitor_interval, stats_callback_fn=callback_fn
-            )
-            self._monitoring_thread.start()
-
-    def stop_resource_monitoring(self):
-        if self._monitoring_thread:
-            self._monitoring_thread.stop()
 
 
 class NondeterministicDataLoader(torch.utils.data.DataLoader):
