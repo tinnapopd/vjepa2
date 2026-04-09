@@ -325,7 +325,10 @@ if __name__ == "__main__":
             )
     else:
         num_gpus = len(args.devices)
-        mp.set_start_method("spawn")
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
         for rank in range(num_gpus):
             mp.Process(
                 target=process_main,
