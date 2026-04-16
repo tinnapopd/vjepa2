@@ -1,7 +1,7 @@
-cpus_per_task: 16
+# cpus_per_task: 16
 eval_name: video_classification_frozen
 folder: /home/sp/sp/jepa/evals_2_1/
-mem_per_gpu: 32G
+mem_per_gpu: 16G
 nodes: 1
 max_workers: 1
 tag: anomaly-16x3x3
@@ -144,7 +144,7 @@ experiment:
         start_lr: 0.0001
         warmup: 0.0
         weight_decay: 0.8
-    num_epochs: 20
+    num_epochs: 30
     use_bfloat16: true
     use_pos_embed: false
 
