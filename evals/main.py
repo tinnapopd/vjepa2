@@ -170,7 +170,7 @@ if __name__ == "__main__":
         data_params = params.get("experiment", {}).get("data")
         if data_params is None:
             data_params = params.get("data")
-            
+
         if data_params is not None:
             train_csv = data_params.get("dataset_train", "")
             val_csv = data_params.get("dataset_val", "")

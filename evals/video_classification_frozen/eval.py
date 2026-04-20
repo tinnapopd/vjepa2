@@ -170,7 +170,7 @@ def main(args_eval, resume_preempt=False):
         for _ in opt_kwargs
     ]
     classifiers = [
-        DistributedDataParallel(c, static_graph=True) for c in classifiers
+        DistributedDataParallel(c, device_ids=[device], static_graph=True) for c in classifiers
     ]
     print(classifiers[0])
 
