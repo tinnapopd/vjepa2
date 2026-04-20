@@ -49,6 +49,14 @@ pp = pprint.PrettyPrinter(indent=4)
 
 
 def main(args_eval, resume_preempt=False):
+    import torch.multiprocessing
+    import torch
+    
+    # Avoid SIGBUS (-7) exit codes from Docker instances with limited /dev/shm shared memory
+    try:
+        torch.multiprocessing.set_sharing_strategy('file_system')
+    except Exception as e:
+        logger.warning(f"Failed to set sharing strategy: {e}")
 
     # ----------------------------------------------------------------------- #
     #  PASSED IN PARAMS FROM CONFIG FILE
