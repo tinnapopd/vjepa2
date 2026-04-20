@@ -51,17 +51,16 @@ pp = pprint.PrettyPrinter(indent=4)
 def main(args_eval, resume_preempt=False):
     import torch.multiprocessing
     import torch
-    
+
     # Avoid SIGBUS (-7) exit codes from Docker instances with limited /dev/shm shared memory
     try:
-        torch.multiprocessing.set_sharing_strategy('file_system')
+        torch.multiprocessing.set_sharing_strategy("file_system")
     except Exception as e:
         logger.warning(f"Failed to set sharing strategy: {e}")
 
     # ----------------------------------------------------------------------- #
     #  PASSED IN PARAMS FROM CONFIG FILE
     # ----------------------------------------------------------------------- #
-
     # -- VAL ONLY
     val_only = args_eval.get("val_only", False)
     if val_only:
@@ -178,7 +177,8 @@ def main(args_eval, resume_preempt=False):
         for _ in opt_kwargs
     ]
     classifiers = [
-        DistributedDataParallel(c, device_ids=[device], static_graph=True) for c in classifiers
+        DistributedDataParallel(c, device_ids=[device], static_graph=True)
+        for c in classifiers
     ]
     print(classifiers[0])
 
