@@ -25,14 +25,18 @@ import random
 import torch
 
 
-def _get_pixels(per_pixel, rand_color, patch_size, dtype=torch.float32, device="cuda"):
+def _get_pixels(
+    per_pixel, rand_color, patch_size, dtype=torch.float32, device="cuda"
+):
     # NOTE I've seen CUDA illegal memory access errors being caused by the normal_()
     # paths, flip the order so normal is run on CPU if this becomes a problem
     # Issue has been fixed in master https://github.com/pytorch/pytorch/issues/19508
     if per_pixel:
         return torch.empty(patch_size, dtype=dtype, device=device).normal_()
     elif rand_color:
-        return torch.empty((patch_size[0], 1, 1), dtype=dtype, device=device).normal_()
+        return torch.empty(
+            (patch_size[0], 1, 1), dtype=dtype, device=device
+        ).normal_()
     else:
         return torch.zeros((patch_size[0], 1, 1), dtype=dtype, device=device)
 
@@ -94,10 +98,16 @@ class RandomErasing:
         if random.random() > self.probability:
             return
         area = img_h * img_w
-        count = self.min_count if self.min_count == self.max_count else random.randint(self.min_count, self.max_count)
+        count = (
+            self.min_count
+            if self.min_count == self.max_count
+            else random.randint(self.min_count, self.max_count)
+        )
         for _ in range(count):
             for _ in range(10):
-                target_area = random.uniform(self.min_area, self.max_area) * area / count
+                target_area = (
+                    random.uniform(self.min_area, self.max_area) * area / count
+                )
                 aspect_ratio = math.exp(random.uniform(*self.log_aspect_ratio))
                 h = int(round(math.sqrt(target_area * aspect_ratio)))
                 w = int(round(math.sqrt(target_area / aspect_ratio)))
@@ -126,10 +136,16 @@ class RandomErasing:
         if random.random() > self.probability:
             return
         area = img_h * img_w
-        count = self.min_count if self.min_count == self.max_count else random.randint(self.min_count, self.max_count)
+        count = (
+            self.min_count
+            if self.min_count == self.max_count
+            else random.randint(self.min_count, self.max_count)
+        )
         for _ in range(count):
             for _ in range(100):
-                target_area = random.uniform(self.min_area, self.max_area) * area / count
+                target_area = (
+                    random.uniform(self.min_area, self.max_area) * area / count
+                )
                 aspect_ratio = math.exp(random.uniform(*self.log_aspect_ratio))
                 h = int(round(math.sqrt(target_area * aspect_ratio)))
                 w = int(round(math.sqrt(target_area / aspect_ratio)))
@@ -138,22 +154,27 @@ class RandomErasing:
                     left = random.randint(0, img_w - w)
                     for i in range(batch_start, batch_size):
                         img_instance = img[i]
-                        img_instance[:, top : top + h, left : left + w] = _get_pixels(
-                            self.per_pixel,
-                            self.rand_color,
-                            (chan, h, w),
-                            dtype=dtype,
-                            device=self.device,
+                        img_instance[:, top : top + h, left : left + w] = (
+                            _get_pixels(
+                                self.per_pixel,
+                                self.rand_color,
+                                (chan, h, w),
+                                dtype=dtype,
+                                device=self.device,
+                            )
                         )
                     break
 
     def __call__(self, input):
         if len(input.size()) == 3:
-            self._erase(input, *input.size(), input.dtype)
+            chan, img_h, img_w = input.size()
+            self._erase(input, chan, img_h, img_w, input.dtype)
         else:
             batch_size, chan, img_h, img_w = input.size()
             # skip first slice of batch if num_splits is set (for clean portion of samples)
-            batch_start = batch_size // self.num_splits if self.num_splits > 1 else 0
+            batch_start = (
+                batch_size // self.num_splits if self.num_splits > 1 else 0
+            )
             if self.cube:
                 self._erase_cube(
                     input,

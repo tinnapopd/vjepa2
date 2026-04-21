@@ -7,7 +7,6 @@ import torch.nn as nn
 
 
 class MultiSeqWrapper(nn.Module):
-
     def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone
@@ -29,7 +28,6 @@ class MultiSeqWrapper(nn.Module):
 
 
 class PredictorMultiSeqWrapper(nn.Module):
-
     def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone
@@ -39,6 +37,10 @@ class PredictorMultiSeqWrapper(nn.Module):
         outs = [[] for _ in x]
         for i, (xi, mxi, myi) in enumerate(zip(x, masks_x, masks_y)):
             for xij, mxij, myij in zip(xi, mxi, myi):
-                outs[i] += [self.backbone(xij, mxij, myij, mask_index=i, has_cls=has_cls)]
+                outs[i] += [
+                    self.backbone(
+                        xij, mxij, myij, mask_index=i, has_cls=has_cls
+                    )
+                ]
                 n += 1
         return outs

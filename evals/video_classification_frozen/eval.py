@@ -25,13 +25,13 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from evals.video_classification_frozen.models import init_module
-from evals.video_classification_frozen.utils import make_transforms
-from src.datasets.data_manager import init_data
-from src.models.attentive_pooler import AttentiveClassifier
-from src.utils.checkpoint_loader import robust_checkpoint_loader
-from src.utils.distributed import AllReduce, init_distributed
-from src.utils.logging import AverageMeter, CSVLogger
+from evals.video_classification_frozen.models import init_module  # type: ignore
+from evals.video_classification_frozen.utils import make_transforms  # type: ignore
+from src.datasets.data_manager import init_data  # type: ignore
+from src.models.attentive_pooler import AttentiveClassifier  # type: ignore
+from src.utils.checkpoint_loader import robust_checkpoint_loader  # type: ignore
+from src.utils.distributed import AllReduce, init_distributed  # type: ignore
+from src.utils.logging import AverageMeter  # type: ignore
 
 from clearml import Logger as ClearMLLogger, Task as ClearMLTask, OutputModel
 
@@ -141,17 +141,7 @@ def main(args_eval, resume_preempt=False):
         folder = os.path.join(folder, eval_tag)
     if not os.path.exists(folder):
         os.makedirs(folder, exist_ok=True)
-    log_file = os.path.join(folder, f"log_r{rank}.csv")
     latest_path = os.path.join(folder, "latest.pt")
-
-    # -- make csv_logger
-    if rank == 0:
-        csv_logger = CSVLogger(
-            log_file,
-            ("%d", "epoch"),
-            ("%.5f", "train_acc"),
-            ("%.5f", "val_acc"),
-        )
 
     # Initialize model
 
@@ -261,13 +251,14 @@ def main(args_eval, resume_preempt=False):
             torch.save(save_dict, latest_path)
 
     # TRAIN LOOP
+    global_step = start_epoch * ipe  # continuous step counter across epochs
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
         train_sampler.set_epoch(epoch)
         if val_only:
-            train_acc = -1.0
+            train_acc, train_loss = -1.0, -1.0
         else:
-            train_acc = run_one_epoch(
+            train_acc, train_loss = run_one_epoch(
                 device=device,
                 training=True,
                 encoder=encoder,
@@ -278,9 +269,13 @@ def main(args_eval, resume_preempt=False):
                 wd_scheduler=wd_scheduler,
                 data_loader=train_loader,
                 use_bfloat16=use_bfloat16,
+                rank=rank,
+                step_offset=global_step,
+                split="train",
             )
+            global_step += ipe
 
-        val_acc = run_one_epoch(
+        val_acc, val_loss = run_one_epoch(
             device=device,
             training=False,
             encoder=encoder,
@@ -291,25 +286,15 @@ def main(args_eval, resume_preempt=False):
             wd_scheduler=wd_scheduler,
             data_loader=val_loader,
             use_bfloat16=use_bfloat16,
+            rank=rank,
+            step_offset=global_step,
+            split="val",
         )
 
         logger.info(
-            "[%5d] train: %.3f%% test: %.3f%%"
-            % (epoch + 1, train_acc, val_acc)
+            "[%5d] train: %.3f%% (loss %.4f) | val: %.3f%% (loss %.4f)"
+            % (epoch + 1, train_acc, train_loss, val_acc, val_loss)
         )
-        if rank == 0:
-            csv_logger.log(epoch + 1, train_acc, val_acc)
-            clearml_logger = ClearMLLogger.current_logger()
-            if clearml_logger:
-                clearml_logger.report_scalar(
-                    "Accuracy", "Train", value=train_acc, iteration=epoch + 1
-                )
-                clearml_logger.report_scalar(
-                    "Accuracy",
-                    "Validation",
-                    value=val_acc,
-                    iteration=epoch + 1,
-                )
 
         if val_only:
             return
@@ -361,6 +346,9 @@ def run_one_epoch(
     wd_scheduler,
     data_loader,
     use_bfloat16,
+    rank=0,
+    step_offset=0,
+    split="train",
 ):
 
     for c in classifiers:
@@ -368,6 +356,12 @@ def run_one_epoch(
 
     criterion = torch.nn.CrossEntropyLoss()
     top1_meters = [AverageMeter() for _ in classifiers]
+    loss_meters = [AverageMeter() for _ in classifiers]
+
+    # Initialize accumulators — guards against an empty dataloader
+    _agg_top1 = np.zeros(len(classifiers))
+    _agg_loss = np.zeros(len(classifiers))
+
     for itr, data in enumerate(data_loader):
         if training:
             [s.step() for s in scheduler]
@@ -400,8 +394,15 @@ def run_one_epoch(
             [criterion(o, labels) for o in coutputs] for coutputs in outputs
         ]
         with torch.no_grad():
+            # Track per-classifier loss (mean across views)
+            step_losses = [
+                float(sum(lij.item() for lij in li) / len(li)) for li in losses
+            ]
+            for lm, sl in zip(loss_meters, step_losses):
+                lm.update(sl)
+
             outputs = [
-                sum([F.softmax(o, dim=1) for o in coutputs]) / len(coutputs)
+                torch.stack([F.softmax(o, dim=1) for o in coutputs]).mean(0)
                 for coutputs in outputs
             ]
             top1_accs = [
@@ -428,19 +429,39 @@ def run_one_epoch(
             [o.zero_grad() for o in optimizer]
 
         _agg_top1 = np.array([t1m.avg for t1m in top1_meters])
+        _agg_loss = np.array([lm.avg for lm in loss_meters])
+        global_step = step_offset + itr
+
+        # -- step-wise ClearML log (every step)
+        clearml_logger = ClearMLLogger.current_logger()
+        if clearml_logger:
+            clearml_logger.report_scalar(
+                "Accuracy",
+                split,
+                value=float(_agg_top1.max()),
+                iteration=global_step,
+            )
+            clearml_logger.report_scalar(
+                "Loss",
+                split,
+                value=float(_agg_loss.mean()),
+                iteration=global_step,
+            )
+
         if itr % 10 == 0:
             logger.info(
-                "[%5d] %.3f%% [%.3f%% %.3f%%] [mem: %.2e]"
+                "[%5d] acc=%.3f%% [%.3f%% %.3f%%] loss=%.4f [mem: %.2e]"
                 % (
                     itr,
                     _agg_top1.max(),
                     _agg_top1.mean(),
                     _agg_top1.min(),
+                    _agg_loss.mean(),
                     torch.cuda.max_memory_allocated() / 1024.0**2,
                 )
             )
 
-    return _agg_top1.max()
+    return float(_agg_top1.max()), float(_agg_loss.mean())
 
 
 def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
@@ -600,7 +621,7 @@ def init_opt(
                 optimizers[-1], T_max=int(num_epochs * iterations_per_epoch)
             )
         ]
-        scalers += [torch.cuda.amp.GradScaler() if use_bfloat16 else None]
+        scalers += [torch.amp.GradScaler("cuda") if use_bfloat16 else None]
     return optimizers, scalers, schedulers, wd_schedulers
 
 

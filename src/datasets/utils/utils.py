@@ -3,8 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from src.utils.cluster import dataset_paths
-from src.utils.logging import get_logger
+from src.utils.cluster import dataset_paths  # type: ignore
+from src.utils.logging import get_logger  # type: ignore
 
 logger = get_logger("Datasets utils")
 

@@ -12,8 +12,8 @@ import yaml
 from clearml import Dataset as ClearMLDataset, InputModel
 from clearml import Task
 
-from evals.scaffold import main as eval_main
-from src.utils.distributed import init_distributed
+from evals.scaffold import main as eval_main  # type: ignore
+from src.utils.distributed import init_distributed  # type: ignore
 
 parser = argparse.ArgumentParser()
 parser.add_argument(

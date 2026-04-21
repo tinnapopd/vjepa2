@@ -8,12 +8,16 @@ from functools import partial
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 
-from src.masks.utils import apply_masks
-from src.models.utils.modules import Block
-from src.models.utils.patch_embed import PatchEmbed, PatchEmbed3D
-from src.models.utils.pos_embs import get_2d_sincos_pos_embed, get_3d_sincos_pos_embed
-from src.utils.tensors import trunc_normal_
+from src.masks.utils import apply_masks  # type: ignore
+from src.models.utils.modules import Block  # type: ignore
+from src.models.utils.patch_embed import PatchEmbed, PatchEmbed3D  # type: ignore
+from src.models.utils.pos_embs import (  # type: ignore
+    get_2d_sincos_pos_embed,
+    get_3d_sincos_pos_embed,
+)
+from src.utils.tensors import trunc_normal_  # type: ignore
 
 
 class VisionTransformer(nn.Module):
@@ -45,7 +49,7 @@ class VisionTransformer(nn.Module):
         use_activation_checkpointing=False,
         use_rope=False,
         handle_nonsquare_inputs=True,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim
@@ -63,17 +67,30 @@ class VisionTransformer(nn.Module):
 
         self.use_activation_checkpointing = use_activation_checkpointing
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        dpr = [
+            x.item() for x in torch.linspace(0, drop_path_rate, depth)
+        ]  # stochastic depth decay rule
 
         # Tokenize pixels with convolution
         if self.is_video:
             self.patch_embed = PatchEmbed3D(
-                patch_size=patch_size, tubelet_size=tubelet_size, in_chans=in_chans, embed_dim=embed_dim
+                patch_size=patch_size,
+                tubelet_size=tubelet_size,
+                in_chans=in_chans,
+                embed_dim=embed_dim,
             )
-            self.num_patches = (num_frames // tubelet_size) * (img_size[0] // patch_size) * (img_size[1] // patch_size)
+            self.num_patches = (
+                (num_frames // tubelet_size)
+                * (img_size[0] // patch_size)
+                * (img_size[1] // patch_size)
+            )
         else:
-            self.patch_embed = PatchEmbed(patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-            self.num_patches = (img_size[0] // patch_size) * (img_size[1] // patch_size)
+            self.patch_embed = PatchEmbed(
+                patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim
+            )
+            self.num_patches = (img_size[0] // patch_size) * (
+                img_size[1] // patch_size
+            )
 
         # Position embedding
         self.uniform_power = uniform_power
@@ -81,7 +98,10 @@ class VisionTransformer(nn.Module):
         if self.use_rope:
             self.pos_embed = None
         else:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim), requires_grad=False)
+            self.pos_embed = nn.Parameter(
+                torch.zeros(1, self.num_patches, embed_dim),
+                requires_grad=False,
+            )
 
         # Attention Blocks
         self.blocks = nn.ModuleList(
@@ -117,14 +137,22 @@ class VisionTransformer(nn.Module):
 
     def _init_pos_embed(self, pos_embed):
         embed_dim = pos_embed.size(-1)
-        grid_size = self.img_height // self.patch_size  # TODO: update; currently assumes square input
+        grid_size = (
+            self.img_height // self.patch_size
+        )  # TODO: update; currently assumes square input
         if self.is_video:
             grid_depth = self.num_frames // self.tubelet_size
             sincos = get_3d_sincos_pos_embed(
-                embed_dim, grid_size, grid_depth, cls_token=False, uniform_power=self.uniform_power
+                embed_dim,
+                grid_size,
+                grid_depth,
+                cls_token=False,
+                uniform_power=self.uniform_power,
             )
         else:
-            sincos = get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False)
+            sincos = get_2d_sincos_pos_embed(
+                embed_dim, grid_size, cls_token=False
+            )
         pos_embed.copy_(torch.from_numpy(sincos).float().unsqueeze(0))
 
     def _init_weights(self, m):
@@ -148,9 +176,9 @@ class VisionTransformer(nn.Module):
         def rescale(param, layer_id):
             param.div_(math.sqrt(2.0 * layer_id))
 
-        for layer_id, layer in enumerate(self.blocks):
-            rescale(layer.attn.proj.weight.data, layer_id + 1)
-            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+        for layer_id, block in enumerate(self.blocks):
+            rescale(block.attn.proj.weight.data, layer_id + 1)  # type: ignore[attr-defined]
+            rescale(block.mlp.fc2.weight.data, layer_id + 1)  # type: ignore[attr-defined]
 
     def get_num_layers(self):
         return len(self.blocks)
@@ -175,6 +203,8 @@ class VisionTransformer(nn.Module):
         elif x.ndim == 5:
             _, _, T, H, W = x.shape
             T = T // self.tubelet_size
+        else:
+            raise ValueError(f"Expected 4D or 5D input, got {x.ndim}D")
         H_patches = H // self.patch_size
         W_patches = W // self.patch_size
         if not self.handle_nonsquare_inputs:
@@ -197,10 +227,24 @@ class VisionTransformer(nn.Module):
         for i, blk in enumerate(self.blocks):
             if self.use_activation_checkpointing:
                 x = torch.utils.checkpoint.checkpoint(
-                    blk, x, masks, None, T=T, H_patches=H_patches, W_patches=W_patches, use_reentrant=False
+                    blk,
+                    x,
+                    masks,
+                    None,
+                    T=T,
+                    H_patches=H_patches,
+                    W_patches=W_patches,
+                    use_reentrant=False,
                 )
             else:
-                x = blk(x, mask=masks, attn_mask=None, T=T, H_patches=H_patches, W_patches=W_patches)
+                x = blk(
+                    x,
+                    mask=masks,
+                    attn_mask=None,
+                    T=T,
+                    H_patches=H_patches,
+                    W_patches=W_patches,
+                )
             if self.out_layers is not None and i in self.out_layers:
                 outs.append(self.norm(x))
 
@@ -217,15 +261,26 @@ class VisionTransformer(nn.Module):
         _, N, dim = pos_embed.shape
 
         if self.is_video:
-
             # If pos_embed already correct size, just return
             _, _, T, H, W = x.shape
-            if H == self.img_height and W == self.img_width and T == self.num_frames:
+            if (
+                H == self.img_height
+                and W == self.img_width
+                and T == self.num_frames
+            ):
                 return pos_embed
 
             # Just chop off last N tokens of positional embedding
-            elif H == self.img_height and W == self.img_width and T < self.num_frames:
-                new_N = int((T // self.tubelet_size) * (H // self.patch_size) * (W // self.patch_size))
+            elif (
+                H == self.img_height
+                and W == self.img_width
+                and T < self.num_frames
+            ):
+                new_N = int(
+                    (T // self.tubelet_size)
+                    * (H // self.patch_size)
+                    * (W // self.patch_size)
+                )
                 return pos_embed[:, :new_N, :]
 
             # Convert depth, height, width of input to be measured in patches
@@ -239,13 +294,17 @@ class VisionTransformer(nn.Module):
             N_t = self.num_frames // self.tubelet_size
             N_h = self.img_height // self.patch_size
             N_w = self.img_width // self.patch_size
-            assert N_h * N_w * N_t == N, "Positional embedding initialized incorrectly"
+            assert N_h * N_w * N_t == N, (
+                "Positional embedding initialized incorrectly"
+            )
 
             # Compute scale factor for spatio-temporal interpolation
             scale_factor = (T / N_t, H / N_h, W / N_w)
 
             pos_embed = nn.functional.interpolate(
-                pos_embed.reshape(1, N_t, N_h, N_w, dim).permute(0, 4, 1, 2, 3),
+                pos_embed.reshape(1, N_t, N_h, N_w, dim).permute(
+                    0, 4, 1, 2, 3
+                ),
                 scale_factor=scale_factor,
                 mode="trilinear",
             )
@@ -253,7 +312,6 @@ class VisionTransformer(nn.Module):
             return pos_embed
 
         else:
-
             # If pos_embed already correct size, just return
             _, _, H, W = x.shape
             if H == self.img_height and W == self.img_width:
@@ -264,7 +322,9 @@ class VisionTransformer(nn.Module):
             scale_factor = math.sqrt(npatch / N)
 
             pos_embed = nn.functional.interpolate(
-                pos_embed.reshape(1, int(math.sqrt(N)), int(math.sqrt(N)), dim).permute(0, 3, 1, 2),
+                pos_embed.reshape(
+                    1, int(math.sqrt(N)), int(math.sqrt(N)), dim
+                ).permute(0, 3, 1, 2),
                 scale_factor=scale_factor,
                 mode="bicubic",
             )
@@ -281,7 +341,7 @@ def vit_large(patch_size=16, **kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -295,7 +355,7 @@ def vit_huge(patch_size=16, **kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -309,7 +369,7 @@ def vit_giant_xformers(patch_size=16, **kwargs):
         mlp_ratio=48 / 11,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -326,7 +386,7 @@ def vit_synthetic(patch_size=16, **kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -340,7 +400,7 @@ def vit_tiny(patch_size=16, **kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -354,7 +414,7 @@ def vit_small(patch_size=16, **kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -368,7 +428,7 @@ def vit_base(patch_size=16, **kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -383,7 +443,7 @@ def vit_large_rope(patch_size=16, **kwargs):
         qkv_bias=True,
         use_rope=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -398,7 +458,7 @@ def vit_huge_rope(patch_size=16, **kwargs):
         qkv_bias=True,
         use_rope=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -412,7 +472,7 @@ def vit_giant(patch_size=16, **kwargs):
         mlp_ratio=48 / 11,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -427,7 +487,7 @@ def vit_giant_rope(patch_size=16, **kwargs):
         qkv_bias=True,
         use_rope=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -442,7 +502,7 @@ def vit_giant_xformers_rope(patch_size=16, **kwargs):
         qkv_bias=True,
         use_rope=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -456,7 +516,7 @@ def vit_gigantic(patch_size=16, **kwargs):
         mlp_ratio=64 / 13,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -470,7 +530,7 @@ def vit_gigantic_xformers(patch_size=16, **kwargs):
         mlp_ratio=64 / 13,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 

@@ -39,7 +39,7 @@ def init_data(
     log_dir=None,
 ):
     if data.lower() == "imagenet":
-        from src.datasets.imagenet1k import make_imagenet1k
+        from src.datasets.imagenet1k import make_imagenet1k  # type:ignore
 
         dataset, data_loader, dist_sampler = make_imagenet1k(
             transform=transform,
@@ -57,7 +57,7 @@ def init_data(
         )
 
     elif data.lower() == "videodataset":
-        from src.datasets.video_dataset import make_videodataset
+        from src.datasets.video_dataset import make_videodataset  # type:ignore
 
         dataset, data_loader, dist_sampler = make_videodataset(
             data_paths=root_path,
@@ -84,5 +84,8 @@ def init_data(
             deterministic=deterministic,
             log_dir=log_dir,
         )
+
+    else:
+        raise ValueError(f"Unknown dataset: {data}")
 
     return (data_loader, dist_sampler)

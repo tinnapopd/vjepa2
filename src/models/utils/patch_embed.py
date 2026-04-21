@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import torch.nn as nn
-from einops import rearrange
 
 
 class PatchEmbed(nn.Module):
@@ -15,7 +14,9 @@ class PatchEmbed(nn.Module):
     def __init__(self, patch_size=16, in_chans=3, embed_dim=768):
         super().__init__()
         self.patch_size = patch_size
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.proj = nn.Conv2d(
+            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size
+        )
 
     def forward(self, x):
         B, C, H, W = x.shape

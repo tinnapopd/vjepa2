@@ -8,9 +8,10 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 
-from src.models.utils.modules import Block, CrossAttention, CrossAttentionBlock
-from src.utils.tensors import trunc_normal_
+from src.models.utils.modules import Block, CrossAttention, CrossAttentionBlock  # type: ignore
+from src.utils.tensors import trunc_normal_  # type: ignore
 
 
 class AttentivePooler(nn.Module):
@@ -31,15 +32,23 @@ class AttentivePooler(nn.Module):
     ):
         super().__init__()
         self.use_activation_checkpointing = use_activation_checkpointing
-        self.query_tokens = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
+        self.query_tokens = nn.Parameter(
+            torch.zeros(1, num_queries, embed_dim)
+        )
 
         self.complete_block = complete_block
         if complete_block:
             self.cross_attention_block = CrossAttentionBlock(
-                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, norm_layer=norm_layer
+                dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                norm_layer=norm_layer,
             )
         else:
-            self.cross_attention_block = CrossAttention(dim=embed_dim, num_heads=num_heads, qkv_bias=qkv_bias)
+            self.cross_attention_block = CrossAttention(
+                dim=embed_dim, num_heads=num_heads, qkv_bias=qkv_bias
+            )
 
         self.blocks = None
         if depth > 1:
@@ -73,7 +82,9 @@ class AttentivePooler(nn.Module):
                 rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         if self.complete_block:
-            rescale(self.cross_attention_block.mlp.fc2.weight.data, layer_id + 1)
+            rescale(
+                self.cross_attention_block.mlp.fc2.weight.data, layer_id + 1
+            )
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -92,7 +103,9 @@ class AttentivePooler(nn.Module):
         if self.blocks is not None:
             for blk in self.blocks:
                 if self.use_activation_checkpointing:
-                    x = torch.utils.checkpoint.checkpoint(blk, x, False, None, use_reentrant=False)
+                    x = torch.utils.checkpoint.checkpoint(
+                        blk, x, False, None, use_reentrant=False
+                    )
                 else:
                     x = blk(x)
         q = self.query_tokens.repeat(len(x), 1, 1)

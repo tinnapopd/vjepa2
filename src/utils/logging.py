@@ -24,24 +24,31 @@ def gpu_timer(closure, log_timings=True):
     result = closure()
 
     if log_timings:
-        end.record()
+        end.record()  # type: ignore
         torch.cuda.synchronize()
-        elapsed_time = start.elapsed_time(end)
+        elapsed_time = start.elapsed_time(end)  # type: ignore
 
     return result, elapsed_time
 
 
-LOG_FORMAT = "[%(levelname)-8s][%(asctime)s][%(name)-20s][%(funcName)-25s] %(message)s"
+LOG_FORMAT = (
+    "[%(levelname)-8s][%(asctime)s][%(name)-20s][%(funcName)-25s] %(message)s"
+)
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def get_logger(name=None, force=False):
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT, force=force)
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format=LOG_FORMAT,
+        datefmt=DATE_FORMAT,
+        force=force,
+    )
     return logging.getLogger(name=name)
 
 
 class CSVLogger(object):
-
     def __init__(self, fname, *argv, **kwargs):
         self.fname = fname
         self.types = []
@@ -98,7 +105,17 @@ def git_information():
     jepa_root = jepa_rootpath()
     try:
         resp = (
-            subprocess.check_output(["git", "-C", jepa_root, "rev-parse", "HEAD", "--abbrev-ref", "HEAD"])
+            subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    jepa_root,
+                    "rev-parse",
+                    "HEAD",
+                    "--abbrev-ref",
+                    "HEAD",
+                ]
+            )
             .decode("ascii")
             .strip()
         )

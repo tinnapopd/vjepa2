@@ -35,7 +35,9 @@ class ClipToTensor(object):
         # Retrieve shape
         if isinstance(clip[0], np.ndarray):
             h, w, ch = clip[0].shape
-            assert ch == self.channel_nb, "Got {0} instead of 3 channels".format(ch)
+            assert ch == self.channel_nb, (
+                "Got {0} instead of 3 channels".format(ch)
+            )
         elif isinstance(clip[0], Image.Image):
             w, h = clip[0].size
         elif isinstance(clip[0], torch.Tensor):
@@ -51,9 +53,7 @@ class ClipToTensor(object):
         else:
             raise TypeError(
                 "Expected numpy.ndarray or PIL.Image or torch.Tensor\
-            but got list of {0}".format(
-                    type(clip[0])
-                )
+            but got list of {0}".format(type(clip[0]))
             )
 
         np_clip = np.zeros([self.channel_nb, len(clip), int(h), int(w)])
@@ -67,9 +67,7 @@ class ClipToTensor(object):
             else:
                 raise TypeError(
                     "Expected numpy.ndarray or PIL.Image\
-                but got list of {0}".format(
-                        type(clip[0])
-                    )
+                but got list of {0}".format(type(clip[0]))
                 )
             img = convert_img(img)
             np_clip[:, img_idx, :, :] = img
@@ -108,15 +106,15 @@ class ClipToTensor_K(object):
         # Retrieve shape
         if isinstance(clip[0], np.ndarray):
             h, w, ch = clip[0].shape
-            assert ch == self.channel_nb, "Got {0} instead of 3 channels".format(ch)
+            assert ch == self.channel_nb, (
+                "Got {0} instead of 3 channels".format(ch)
+            )
         elif isinstance(clip[0], Image.Image):
             w, h = clip[0].size
         else:
             raise TypeError(
                 "Expected numpy.ndarray or PIL.Image\
-            but got list of {0}".format(
-                    type(clip[0])
-                )
+            but got list of {0}".format(type(clip[0]))
             )
 
         np_clip = np.zeros([self.channel_nb, len(clip), int(h), int(w)])
@@ -130,9 +128,7 @@ class ClipToTensor_K(object):
             else:
                 raise TypeError(
                     "Expected numpy.ndarray or PIL.Image\
-                but got list of {0}".format(
-                        type(clip[0])
-                    )
+                but got list of {0}".format(type(clip[0]))
                 )
             img = convert_img(img)
             np_clip[:, img_idx, :, :] = img

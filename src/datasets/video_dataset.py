@@ -10,16 +10,16 @@ import warnings
 from logging import getLogger
 
 import numpy as np
-import pandas as pd
+import pandas as pd  # type:ignore
 import torch
 import torchvision
-from decord import cpu, VideoReader
+from decord import cpu, VideoReader  # type:ignore
 
-from src.datasets.utils.dataloader import (
+from src.datasets.utils.dataloader import (  # type:ignore
     ConcatIndices,
     NondeterministicDataLoader,
 )
-from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
+from src.datasets.utils.weighted_sampler import DistributedWeightedSampler  # type:ignore
 
 _GLOBAL_SEED = 0
 logger = getLogger()
@@ -263,7 +263,7 @@ class VideoDataset(torch.utils.data.Dataset):
         except Exception:
             return
         label = self.labels[index]
-        clip_indices = [np.arange(start=0, stop=fpc, dtype=np.int32)]
+        clip_indices = [np.arange(0, fpc, dtype=np.dtype(np.int32))]
 
         # Expanding the input image [3, H, W] ==> [T, 3, H, W]
         buffer = image_tensor.unsqueeze(dim=0).repeat((fpc, 1, 1, 1))
@@ -302,6 +302,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 video_fps = math.ceil(vr.get_avg_fps())
             except Exception as e:
                 logger.warning(e)
+                return [], None
 
             if self.duration is not None:
                 assert self.fps is None

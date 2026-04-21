@@ -9,7 +9,7 @@ from typing import Iterator, Optional
 import numpy as np
 import torch
 
-from src.utils.logging import get_logger
+from src.utils.logging import get_logger  # type:ignore
 from torch.utils.data import DistributedSampler, RandomSampler
 
 logger = get_logger("WeightedSampler")
@@ -38,9 +38,9 @@ class DistributedWeightedSampler(DistributedSampler):
         logger.info(
             f"Using DistributedWeightedSampler with rank {rank} / {num_replicas}"
         )
-        assert hasattr(
-            dataset, "sample_weights"
-        ), "Dataset must have sample_weights property for using DistributedWeightedSampler"
+        assert hasattr(dataset, "sample_weights"), (
+            "Dataset must have sample_weights property for using DistributedWeightedSampler"
+        )
         super().__init__(
             dataset,
             num_replicas=num_replicas,
@@ -52,18 +52,18 @@ class DistributedWeightedSampler(DistributedSampler):
 
     @property
     def sample_probabilities(self) -> np.ndarray:
-        sample_weights = self.dataset.sample_weights
+        sample_weights = self.dataset.sample_weights  # type: ignore[attr-defined]
         if isinstance(sample_weights, torch.Tensor):
             sample_weights = sample_weights.cpu().numpy()
         elif isinstance(sample_weights, list):
             sample_weights = np.array(sample_weights)
-        assert isinstance(
-            sample_weights, np.ndarray
-        ), f"sample_weights must be a numpy array, torch.Tensor, or python list; got {type(sample_weights)}"
+        assert isinstance(sample_weights, np.ndarray), (
+            f"sample_weights must be a numpy array, torch.Tensor, or python list; got {type(sample_weights)}"
+        )
         return sample_weights / np.sum(sample_weights)
 
     def __iter__(self) -> Iterator:
-        n = len(self.dataset)
+        n = len(self.dataset)  # type: ignore[arg-type]
 
         # deterministically shuffle based on epoch and seed
         rng = np.random.default_rng(self.seed + self.epoch)
@@ -113,9 +113,9 @@ class MemoryEfficientDistributedWeightedSampler(DistributedSampler):
         logger.info(
             f"Using MemoryEfficientDistributedWeightedSampler with rank {rank} / {num_replicas}"
         )
-        assert hasattr(
-            dataset, "dataset_weights"
-        ), "Dataset must have dataset_weights property for using MemoryEfficientDistributedWeightedSampler"
+        assert hasattr(dataset, "dataset_weights"), (
+            "Dataset must have dataset_weights property for using MemoryEfficientDistributedWeightedSampler"
+        )
         super().__init__(
             dataset,
             num_replicas=num_replicas,
@@ -133,7 +133,9 @@ class MemoryEfficientDistributedWeightedSampler(DistributedSampler):
             )
 
         if self.shuffle:
-            self.rng = np.random.default_rng(self.seed + self.rank + self.epoch)
+            self.rng = np.random.default_rng(
+                self.seed + self.rank + self.epoch
+            )
             total_weights = sum(self.dataset_weights)
             self.dataset_probablities = np.array(
                 [w / total_weights for w in self.dataset_weights]
@@ -179,7 +181,9 @@ class MemoryEfficientDistributedWeightedSampler(DistributedSampler):
             in_rank_sample = self.rng.integers(num_samples_in_rank)
 
             # 2) Getting sample index in the dataset.
-            sample_idx_in_dataset = in_rank_sample * self.num_replicas + self.rank
+            sample_idx_in_dataset = (
+                in_rank_sample * self.num_replicas + self.rank
+            )
 
         else:
             # Iterate through the dataset orders in a round-robin fashion, offset by the rank
@@ -241,9 +245,9 @@ class MemoryEfficientDistributedWeightedSamplerLessRepeat(DistributedSampler):
         logger.info(
             f"Using MemoryEfficientDistributedWeightedSamplerLessRepeat with rank {rank} / {num_replicas}"
         )
-        assert hasattr(
-            dataset, "dataset_weights"
-        ), "Dataset must have dataset_weights property for using MemoryEfficientDistributedWeightedSamplerLessRepeat"
+        assert hasattr(dataset, "dataset_weights"), (
+            "Dataset must have dataset_weights property for using MemoryEfficientDistributedWeightedSamplerLessRepeat"
+        )
         super().__init__(
             dataset,
             num_replicas=num_replicas,
@@ -264,7 +268,9 @@ class MemoryEfficientDistributedWeightedSamplerLessRepeat(DistributedSampler):
             )
 
         if self.shuffle:
-            self.rng = np.random.default_rng(self.seed + self.rank + self.epoch)
+            self.rng = np.random.default_rng(
+                self.seed + self.rank + self.epoch
+            )
             total_weights = sum(self.dataset_weights)
             self.dataset_probablities = np.array(
                 [w / total_weights for w in self.dataset_weights]
@@ -279,7 +285,6 @@ class MemoryEfficientDistributedWeightedSamplerLessRepeat(DistributedSampler):
             # Getting a RandomSampler for indices assigned to each dataset.
             self.individual_dataset_sampler = []
             for ids, ds in enumerate(self.dataset_sizes):
-
                 # NOTE: this may effectively drop the last batch,
                 # but given the sample sizes that we use this sampler with, it should not be an issue.
                 num_samples_in_rank = ds // self.num_replicas
@@ -302,7 +307,7 @@ class MemoryEfficientDistributedWeightedSamplerLessRepeat(DistributedSampler):
     def __iter__(self) -> Iterator:
         return self
 
-    def _new_sampler(self, sample_size: int) -> RandomSampler:
+    def _new_sampler(self, sample_size: int) -> Iterator[int]:
         assert self.shuffle
 
         return iter(
@@ -315,14 +320,20 @@ class MemoryEfficientDistributedWeightedSamplerLessRepeat(DistributedSampler):
     def _in_rank_next_index_for_dataset(self, dataset_idx: int) -> int:
         assert self.shuffle
 
-        next_sampler_idx = safe_next(self.individual_dataset_sampler[dataset_idx])
+        next_sampler_idx = safe_next(
+            self.individual_dataset_sampler[dataset_idx]
+        )
         if next_sampler_idx is None:
             # We have reached the end of the dataset, we need to reset the sampler.
-            num_samples_in_rank = self.dataset_sizes[dataset_idx] // self.num_replicas
+            num_samples_in_rank = (
+                self.dataset_sizes[dataset_idx] // self.num_replicas
+            )
             self.individual_dataset_sampler[dataset_idx] = self._new_sampler(
                 num_samples_in_rank
             )
-            next_sampler_idx = safe_next(self.individual_dataset_sampler[dataset_idx])
+            next_sampler_idx = safe_next(
+                self.individual_dataset_sampler[dataset_idx]
+            )
             assert next_sampler_idx is not None
 
         return next_sampler_idx
@@ -332,10 +343,14 @@ class MemoryEfficientDistributedWeightedSamplerLessRepeat(DistributedSampler):
             selected_dataset_idx = self.rng.choice(
                 range(len(self.dataset_weights)), p=self.dataset_probablities
             )
-            in_rank_sample = self._in_rank_next_index_for_dataset(selected_dataset_idx)
+            in_rank_sample = self._in_rank_next_index_for_dataset(
+                selected_dataset_idx
+            )
 
             # 2) Getting sample index in the dataset.
-            sample_idx_in_dataset = in_rank_sample * self.num_replicas + self.rank
+            sample_idx_in_dataset = (
+                in_rank_sample * self.num_replicas + self.rank
+            )
 
         else:
             # Iterate through the dataset orders in a round-robin fashion, offset by the rank

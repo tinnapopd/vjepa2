@@ -29,9 +29,9 @@ import logging
 import torch
 import torch.nn as nn
 
-import src.models.vision_transformer as vit
-from src.masks.utils import apply_masks
-from src.models.utils.pos_embs import get_1d_sincos_pos_embed
+import src.models.vision_transformer as vit  # type: ignore
+from src.masks.utils import apply_masks  # type: ignore
+from src.models.utils.pos_embs import get_1d_sincos_pos_embed  # type: ignore
 
 logging.basicConfig()
 logger = logging.getLogger()
@@ -56,18 +56,27 @@ def init_module(
     out_layers = wrapper_kwargs.get("out_layers")
 
     model = vit.__dict__[enc_model_name](
-        img_size=resolution, num_frames=frames_per_clip, out_layers=out_layers, **enc_kwargs
+        img_size=resolution,
+        num_frames=frames_per_clip,
+        out_layers=out_layers,
+        **enc_kwargs,
     )
 
     pretrained_dict = checkpoint[enc_ckp_key]
     # --
-    pretrained_dict = {k.replace("module.", ""): v for k, v in pretrained_dict.items()}
-    pretrained_dict = {k.replace("backbone.", ""): v for k, v in pretrained_dict.items()}
+    pretrained_dict = {
+        k.replace("module.", ""): v for k, v in pretrained_dict.items()
+    }
+    pretrained_dict = {
+        k.replace("backbone.", ""): v for k, v in pretrained_dict.items()
+    }
     for k, v in model.state_dict().items():
         if k not in pretrained_dict:
             logger.info(f'key "{k}" could not be found in loaded state dict')
         elif pretrained_dict[k].shape != v.shape:
-            logger.info(f'key "{k}" is of different shape in model and loaded state dict')
+            logger.info(
+                f'key "{k}" is of different shape in model and loaded state dict'
+            )
             pretrained_dict[k] = v
     msg = model.load_state_dict(pretrained_dict, strict=False)
     logger.info(f"loaded pretrained model with msg: {msg}")
@@ -105,7 +114,9 @@ class ClipAggregation(nn.Module):
         self.pos_embed = None
         if use_pos_embed:
             max_T = max_frames // tubelet_size
-            self.pos_embed = nn.Parameter(torch.zeros(1, max_T, embed_dim), requires_grad=False)
+            self.pos_embed = nn.Parameter(
+                torch.zeros(1, max_T, embed_dim), requires_grad=False
+            )
             sincos = get_1d_sincos_pos_embed(embed_dim, max_T)
             self.pos_embed.copy_(torch.from_numpy(sincos).float().unsqueeze(0))
 
@@ -129,27 +140,38 @@ class ClipAggregation(nn.Module):
 
             # Unroll outputs into a 2D array [spatial_views x temporal_views]
             eff_B = B * num_views_per_clip
-            all_outputs = [[] for _ in range(num_views_per_clip)]
+            all_outputs: list[list[torch.Tensor]] = [
+                [] for _ in range(num_views_per_clip)
+            ]
             for i in range(num_clips):
                 o = outputs[i * eff_B : (i + 1) * eff_B]
                 for j in range(num_views_per_clip):
                     all_outputs[j].append(o[j * B : (j + 1) * B])
 
-            for i, outputs in enumerate(all_outputs):
+            results: list[torch.Tensor] = []
+            for i, view_outputs in enumerate(all_outputs):
                 # Concatenate along temporal dimension
-                outputs = [o.reshape(B, T, S, D) for o in outputs]
-                outputs = torch.cat(outputs, dim=1).flatten(1, 2)
+                merged = [o.reshape(B, T, S, D) for o in view_outputs]
+                merged_t = torch.cat(merged, dim=1).flatten(1, 2)
                 # Compute positional embedding
                 if (self.pos_embed is not None) and (clip_indices is not None):
-                    _indices = [c[:, :: self.tubelet_size] for c in clip_indices]
+                    _indices = [
+                        c[:, :: self.tubelet_size] for c in clip_indices
+                    ]
                     pos_embed = self.pos_embed.repeat(B, 1, 1)  # [B, max_T, D]
-                    pos_embed = apply_masks(pos_embed, _indices, concat=False)  # list(Tensor([B, T, D]))
-                    pos_embed = torch.cat(pos_embed, dim=1)  # concatenate along temporal dimension
-                    pos_embed = pos_embed.unsqueeze(2).repeat(1, 1, S, 1)  # [B, T*num_clips, S, D]
+                    pos_embed = apply_masks(
+                        pos_embed, _indices, concat=False
+                    )  # list(Tensor([B, T, D]))
+                    pos_embed = torch.cat(
+                        pos_embed, dim=1
+                    )  # concatenate along temporal dimension
+                    pos_embed = pos_embed.unsqueeze(2).repeat(
+                        1, 1, S, 1
+                    )  # [B, T*num_clips, S, D]
                     pos_embed = pos_embed.flatten(1, 2)
-                    outputs += pos_embed
-                all_outputs[i] = outputs
+                    merged_t = merged_t + pos_embed
+                results.append(merged_t)
 
-            return all_outputs
+            return results
 
         return multiviews_postprocess(outputs)

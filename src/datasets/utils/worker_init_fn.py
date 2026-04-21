@@ -25,12 +25,14 @@ from typing import Optional
 import numpy as np
 import torch
 
-from src.utils.logging import get_logger
+from src.utils.logging import get_logger  # type:ignore
 
 logger = get_logger("worker_init_fn")
 
 
-def _generate_seed_sequence(base_seed: int, worker_id: int, global_rank: int, count: int) -> list[int]:
+def _generate_seed_sequence(
+    base_seed: int, worker_id: int, global_rank: int, count: int
+) -> list[int]:
     """Generates a sequence of seeds from a base seed, worker id and rank using the linear congruential generator (LCG)
     algorithm."""
     # Combine base seed, worker id and rank into a unique 64-bit number
@@ -38,12 +40,16 @@ def _generate_seed_sequence(base_seed: int, worker_id: int, global_rank: int, co
     seeds = []
     for _ in range(count):
         # x_(n+1) = (a * x_n + c) mod m. With c=1, m=2^64 and a is D. Knuth's constant
-        combined_seed = (combined_seed * 6364136223846793005 + 1) & ((1 << 64) - 1)
+        combined_seed = (combined_seed * 6364136223846793005 + 1) & (
+            (1 << 64) - 1
+        )
         seeds.append(combined_seed)
     return seeds
 
 
-def pl_worker_init_function(worker_id: int, rank: Optional[int] = None) -> None:  # pragma: no cover
+def pl_worker_init_function(
+    worker_id: int, rank: Optional[int] = None
+) -> None:  # pragma: no cover
     r"""The worker_init_fn that Lightning automatically adds to your dataloader if you previously set the seed with
     ``seed_everything(seed, workers=True)``.
 
@@ -66,9 +72,13 @@ def pl_worker_init_function(worker_id: int, rank: Optional[int] = None) -> None:
     logger.debug(
         f"Initializing random number generators of process {rank} worker {worker_id} with base seed {base_seed}"
     )
-    seed_sequence = _generate_seed_sequence(base_seed, worker_id, rank, count=4)
+    seed_sequence = _generate_seed_sequence(
+        base_seed, worker_id, rank, count=4
+    )
     torch.manual_seed(seed_sequence[0])  # torch takes a 64-bit seed
-    random.seed((seed_sequence[1] << 32) | seed_sequence[2])  # combine two 64-bit seeds
+    random.seed(
+        (seed_sequence[1] << 32) | seed_sequence[2]
+    )  # combine two 64-bit seeds
 
     ss = np.random.SeedSequence([base_seed, worker_id, rank])
     np_rng_seed = ss.generate_state(4)

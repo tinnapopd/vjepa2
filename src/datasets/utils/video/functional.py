@@ -7,7 +7,7 @@ import numbers
 
 import cv2
 import numpy as np
-import PIL
+from PIL import Image
 import torch
 from torchvision.transforms import functional as tvf
 
@@ -19,17 +19,24 @@ def _is_tensor_clip(clip):
 def crop_clip(clip, min_h, min_w, h, w):
     if isinstance(clip[0], np.ndarray) or isinstance(clip[0], torch.Tensor):
         if clip[0].shape[-1] == 3:
-            cropped = [img[min_h : min_h + h, min_w : min_w + w, :] for img in clip]
+            cropped = [
+                img[min_h : min_h + h, min_w : min_w + w, :] for img in clip
+            ]
         else:
             assert clip[0].shape[0] == 3
-            cropped = [img[:, min_h : min_h + h, min_w : min_w + w] for img in clip]
+            cropped = [
+                img[:, min_h : min_h + h, min_w : min_w + w] for img in clip
+            ]
 
-    elif isinstance(clip[0], PIL.Image.Image):
-        cropped = [img.crop((min_w, min_h, min_w + w, min_h + h)) for img in clip]
+    elif isinstance(clip[0], Image.Image):
+        cropped = [
+            img.crop((min_w, min_h, min_w + w, min_h + h)) for img in clip
+        ]
 
     else:
         raise TypeError(
-            "Expected numpy.ndarray or PIL.Image or torch.Tensor):" + "but got list of {0}".format(type(clip[0]))
+            "Expected numpy.ndarray or PIL.Image or torch.Tensor):"
+            + "but got list of {0}".format(type(clip[0]))
         )
     return cropped
 
@@ -43,7 +50,9 @@ def resize_clip(clip, size, interpolation="bilinear"):
                 assert clip[0].shape[0] == 3
                 im_c, im_h, im_w = clip[0].shape
             # Min spatial dim already matches minimal size
-            if (im_w <= im_h and im_w == size) or (im_h <= im_w and im_h == size):
+            if (im_w <= im_h and im_w == size) or (
+                im_h <= im_w and im_h == size
+            ):
                 return clip
             new_h, new_w = get_resize_sizes(im_h, im_w, size)
             size = (new_w, new_h)
@@ -55,32 +64,43 @@ def resize_clip(clip, size, interpolation="bilinear"):
                 np_inter = cv2.INTER_LINEAR
             else:
                 np_inter = cv2.INTER_NEAREST
-            scaled = [cv2.resize(img, size, interpolation=np_inter) for img in clip]
+            scaled = [
+                cv2.resize(img, size, interpolation=np_inter) for img in clip
+            ]
         else:  # isinstance(clip[0], torch.Tensor)
             if interpolation == "bilinear":
                 np_inter = tvf.InterpolationMode.BILINEAR
             else:
                 np_inter = tvf.InterpolationMode.NEAREST
-            size = (size[1], size[0])  # torchvision transformers expect the size in (h, w) order.
-            scaled = [tvf.resize(img, size, interpolation=np_inter) for img in clip]
-    elif isinstance(clip[0], PIL.Image.Image):
+            size = (
+                size[1],
+                size[0],
+            )  # torchvision transformers expect the size in (h, w) order.
+            scaled = [
+                tvf.resize(img, list(size), interpolation=np_inter)
+                for img in clip
+            ]
+    elif isinstance(clip[0], Image.Image):
         if isinstance(size, numbers.Number):
             im_w, im_h = clip[0].size
             # Min spatial dim already matches minimal size
-            if (im_w <= im_h and im_w == size) or (im_h <= im_w and im_h == size):
+            if (im_w <= im_h and im_w == size) or (
+                im_h <= im_w and im_h == size
+            ):
                 return clip
             new_h, new_w = get_resize_sizes(im_h, im_w, size)
             size = (new_w, new_h)
         else:
             size = size[1], size[0]
         if interpolation == "bilinear":
-            pil_inter = PIL.Image.BILINEAR
+            pil_inter = Image.Resampling.BILINEAR
         else:
-            pil_inter = PIL.Image.NEAREST
+            pil_inter = Image.Resampling.NEAREST
         scaled = [img.resize(size, pil_inter) for img in clip]
     else:
         raise TypeError(
-            "Expected numpy.ndarray or PIL.Image or torch.Tensor" + "but got list of {0}".format(type(clip[0]))
+            "Expected numpy.ndarray or PIL.Image or torch.Tensor"
+            + "but got list of {0}".format(type(clip[0]))
         )
     return scaled
 

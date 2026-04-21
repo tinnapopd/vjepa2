@@ -7,8 +7,16 @@ import math
 
 
 class WSDSchedule(object):
-
-    def __init__(self, optimizer, warmup_steps, anneal_steps, T_max, start_lr, ref_lr, final_lr=0.0):
+    def __init__(
+        self,
+        optimizer,
+        warmup_steps,
+        anneal_steps,
+        T_max,
+        start_lr,
+        ref_lr,
+        final_lr=0.0,
+    ):
         self.optimizer = optimizer
         self.start_lr = start_lr
         self.ref_lr = ref_lr
@@ -39,8 +47,16 @@ class WSDSchedule(object):
 
 
 class WarmupCosineSchedule(object):
-
-    def __init__(self, optimizer, warmup_steps, start_lr, ref_lr, T_max, last_epoch=-1, final_lr=0.0):
+    def __init__(
+        self,
+        optimizer,
+        warmup_steps,
+        start_lr,
+        ref_lr,
+        T_max,
+        last_epoch=-1,
+        final_lr=0.0,
+    ):
         self.optimizer = optimizer
         self.start_lr = start_lr
         self.ref_lr = ref_lr
@@ -56,10 +72,15 @@ class WarmupCosineSchedule(object):
             new_lr = self.start_lr + progress * (self.ref_lr - self.start_lr)
         else:
             # -- progress after warmup
-            progress = float(self._step - self.warmup_steps) / float(max(1, self.T_max))
+            progress = float(self._step - self.warmup_steps) / float(
+                max(1, self.T_max)
+            )
             new_lr = max(
                 self.final_lr,
-                self.final_lr + (self.ref_lr - self.final_lr) * 0.5 * (1.0 + math.cos(math.pi * progress)),
+                self.final_lr
+                + (self.ref_lr - self.final_lr)
+                * 0.5
+                * (1.0 + math.cos(math.pi * progress)),
             )
 
         for group in self.optimizer.param_groups:
@@ -69,7 +90,6 @@ class WarmupCosineSchedule(object):
 
 
 class CosineWDSchedule(object):
-
     def __init__(self, optimizer, ref_wd, T_max, final_wd=0.0):
         self.optimizer = optimizer
         self.ref_wd = ref_wd
@@ -80,7 +100,9 @@ class CosineWDSchedule(object):
     def step(self):
         self._step += 1
         progress = self._step / self.T_max
-        new_wd = self.final_wd + (self.ref_wd - self.final_wd) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        new_wd = self.final_wd + (self.ref_wd - self.final_wd) * 0.5 * (
+            1.0 + math.cos(math.pi * progress)
+        )
 
         if self.final_wd <= self.ref_wd:
             new_wd = max(self.final_wd, new_wd)
@@ -94,7 +116,6 @@ class CosineWDSchedule(object):
 
 
 class LinearDecaySchedule(object):
-
     def __init__(self, optimizer, ref_lr, T_max, last_epoch=-1, final_lr=0.0):
         self.optimizer = optimizer
         self.ref_lr = ref_lr

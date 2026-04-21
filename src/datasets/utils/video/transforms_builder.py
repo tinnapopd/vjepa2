@@ -8,8 +8,8 @@ from typing import Optional
 import torch
 import torchvision.transforms as transforms
 
-import src.datasets.utils.video.transforms as video_transforms
-from src.datasets.utils.video.randerase import RandomErasing
+import src.datasets.utils.video.transforms as video_transforms  # type: ignore
+from src.datasets.utils.video.randerase import RandomErasing  # type: ignore
 
 
 def make_transforms(
@@ -40,7 +40,6 @@ def make_transforms(
 
 
 class VideoTransform(object):
-
     def __init__(
         self,
         random_horizontal_flip=True,
@@ -77,7 +76,9 @@ class VideoTransform(object):
         )
 
         self.spatial_transform = (
-            video_transforms.random_resized_crop_with_shift if motion_shift else video_transforms.random_resized_crop
+            video_transforms.random_resized_crop_with_shift
+            if motion_shift
+            else video_transforms.random_resized_crop
         )
 
         self.reprob = reprob
@@ -122,7 +123,9 @@ class VideoTransform(object):
             buffer = buffer.permute(1, 0, 2, 3)
 
         if self.pad_frame_count is not None:
-            buffer = video_transforms.frame_pad(buffer, self.pad_frame_count, self.pad_frame_method)
+            buffer = video_transforms.frame_pad(
+                buffer, self.pad_frame_count, self.pad_frame_method
+            )
 
         return buffer
 

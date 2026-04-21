@@ -7,9 +7,9 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 
-import src.datasets.utils.video.transforms as video_transforms
-import src.datasets.utils.video.volume_transforms as volume_transforms
-from src.datasets.utils.video.randerase import RandomErasing
+import src.datasets.utils.video.transforms as video_transforms  # type: ignore
+import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
+from src.datasets.utils.video.randerase import RandomErasing  # type: ignore
 
 
 def make_transforms(
@@ -49,7 +49,6 @@ def make_transforms(
 
 
 class VideoTransform(object):
-
     def __init__(
         self,
         training=True,
@@ -68,10 +67,14 @@ class VideoTransform(object):
         short_side_size = int(crop_size * 256 / 224)
         self.eval_transform = video_transforms.Compose(
             [
-                video_transforms.Resize(short_side_size, interpolation="bilinear"),
+                video_transforms.Resize(
+                    short_side_size, interpolation="bilinear"
+                ),
                 video_transforms.CenterCrop(size=(crop_size, crop_size)),
                 volume_transforms.ClipToTensor(),
-                video_transforms.Normalize(mean=normalize[0], std=normalize[1]),
+                video_transforms.Normalize(
+                    mean=normalize[0], std=normalize[1]
+                ),
             ]
         )
 
@@ -90,7 +93,9 @@ class VideoTransform(object):
         )
 
         self.spatial_transform = (
-            video_transforms.random_resized_crop_with_shift if motion_shift else video_transforms.random_resized_crop
+            video_transforms.random_resized_crop_with_shift
+            if motion_shift
+            else video_transforms.random_resized_crop
         )
 
         self.reprob = reprob
@@ -138,7 +143,6 @@ class VideoTransform(object):
 
 
 class EvalVideoTransform(object):
-
     def __init__(
         self,
         num_views_per_clip=1,
@@ -147,11 +151,15 @@ class EvalVideoTransform(object):
     ):
         self.views_per_clip = num_views_per_clip
         self.short_side_size = short_side_size
-        self.spatial_resize = video_transforms.Resize(short_side_size, interpolation="bilinear")
+        self.spatial_resize = video_transforms.Resize(
+            short_side_size, interpolation="bilinear"
+        )
         self.to_tensor = video_transforms.Compose(
             [
                 volume_transforms.ClipToTensor(),
-                video_transforms.Normalize(mean=normalize[0], std=normalize[1]),
+                video_transforms.Normalize(
+                    mean=normalize[0], std=normalize[1]
+                ),
             ]
         )
 

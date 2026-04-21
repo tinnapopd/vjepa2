@@ -4,15 +4,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import bisect
-import csv
-import io
-import time
 
 import numpy as np
 import torch
 from torch.utils.data import _utils
-from torch.utils.data.dataloader import ExceptionWrapper, _DatasetKind, _MultiProcessingDataLoaderIter
-
+from torch.utils.data.dataloader import (
+    ExceptionWrapper,
+    _DatasetKind,
+    _MultiProcessingDataLoaderIter,
+)
 
 
 class ConcatIndices:
@@ -29,13 +29,13 @@ class ConcatIndices:
     def __getitem__(self, idx):
         # Returns a pair (dataset_idx, sample_idx)
         if idx < 0 or idx >= len(self):
-            raise ValueError(f"index must be between 0 and the total size ({len(self)})")
+            raise ValueError(
+                f"index must be between 0 and the total size ({len(self)})"
+            )
         dataset_idx = bisect.bisect_right(self.cumulative_sizes, idx)
         if dataset_idx == 0:
             return dataset_idx, idx
         return dataset_idx, idx - self.cumulative_sizes[dataset_idx - 1]
-
-
 
 
 class NondeterministicDataLoader(torch.utils.data.DataLoader):
@@ -54,7 +54,6 @@ class NondeterministicDataLoader(torch.utils.data.DataLoader):
 
 
 class _SloppyMultiProcessingDataLoaderIter(_MultiProcessingDataLoaderIter):
-
     def __init__(self, *args, **kwargs):
         """Pass through constructor."""
         super().__init__(*args, **kwargs)
@@ -94,14 +93,16 @@ class _SloppyMultiProcessingDataLoaderIter(_MultiProcessingDataLoaderIter):
             # Check if the next sample has already been generated
             if len(self._task_info[self._rcvd_idx]) == 2:
                 data = self._task_info.pop(self._rcvd_idx)[1]
-                return self._process_data(data)
+                return self._process_data(data)  # type: ignore[call-arg]
 
             assert not self._shutdown and self._tasks_outstanding > 0
-            idx, data = self._get_data()
+            idx, data = self._get_data()  # type: ignore[misc]
             self._tasks_outstanding -= 1
             if self._dataset_kind == _DatasetKind.Iterable:
                 # Check for _IterableDatasetStopIteration
-                if isinstance(data, _utils.worker._IterableDatasetStopIteration):
+                if isinstance(
+                    data, _utils.worker._IterableDatasetStopIteration
+                ):
                     if self._persistent_workers:
                         self._workers_status[data.worker_id] = False
                     else:
@@ -117,7 +118,7 @@ class _SloppyMultiProcessingDataLoaderIter(_MultiProcessingDataLoaderIter):
                 return data
             else:
                 del self._task_info[idx]
-                return self._process_data(data)
+                return self._process_data(data)  # type: ignore[call-arg]
 
 
 def get_worker_info():

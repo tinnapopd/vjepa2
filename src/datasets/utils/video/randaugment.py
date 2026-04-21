@@ -57,11 +57,11 @@ _HPARAMS_DEFAULT = {
     "img_mean": _FILL,
 }
 
-_RANDOM_INTERPOLATION = (Image.BILINEAR, Image.BICUBIC)
+_RANDOM_INTERPOLATION = (Image.Resampling.BILINEAR, Image.Resampling.BICUBIC)
 
 
 def _interpolation(kwargs):
-    interpolation = kwargs.pop("resample", Image.BILINEAR)
+    interpolation = kwargs.pop("resample", Image.Resampling.BILINEAR)
     if isinstance(interpolation, (list, tuple)):
         return random.choice(interpolation)
     else:
@@ -76,34 +76,46 @@ def _check_args_tf(kwargs):
 
 def shear_x(img, factor, **kwargs):
     _check_args_tf(kwargs)
-    return img.transform(img.size, Image.AFFINE, (1, factor, 0, 0, 1, 0), **kwargs)
+    return img.transform(
+        img.size, Image.Transform.AFFINE, (1, factor, 0, 0, 1, 0), **kwargs
+    )
 
 
 def shear_y(img, factor, **kwargs):
     _check_args_tf(kwargs)
-    return img.transform(img.size, Image.AFFINE, (1, 0, 0, factor, 1, 0), **kwargs)
+    return img.transform(
+        img.size, Image.Transform.AFFINE, (1, 0, 0, factor, 1, 0), **kwargs
+    )
 
 
 def translate_x_rel(img, pct, **kwargs):
     pixels = pct * img.size[0]
     _check_args_tf(kwargs)
-    return img.transform(img.size, Image.AFFINE, (1, 0, pixels, 0, 1, 0), **kwargs)
+    return img.transform(
+        img.size, Image.Transform.AFFINE, (1, 0, pixels, 0, 1, 0), **kwargs
+    )
 
 
 def translate_y_rel(img, pct, **kwargs):
     pixels = pct * img.size[1]
     _check_args_tf(kwargs)
-    return img.transform(img.size, Image.AFFINE, (1, 0, 0, 0, 1, pixels), **kwargs)
+    return img.transform(
+        img.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, pixels), **kwargs
+    )
 
 
 def translate_x_abs(img, pixels, **kwargs):
     _check_args_tf(kwargs)
-    return img.transform(img.size, Image.AFFINE, (1, 0, pixels, 0, 1, 0), **kwargs)
+    return img.transform(
+        img.size, Image.Transform.AFFINE, (1, 0, pixels, 0, 1, 0), **kwargs
+    )
 
 
 def translate_y_abs(img, pixels, **kwargs):
     _check_args_tf(kwargs)
-    return img.transform(img.size, Image.AFFINE, (1, 0, 0, 0, 1, pixels), **kwargs)
+    return img.transform(
+        img.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, pixels), **kwargs
+    )
 
 
 def rotate(img, degrees, **kwargs):
@@ -135,7 +147,9 @@ def rotate(img, degrees, **kwargs):
         )
         matrix[2] += rotn_center[0]
         matrix[5] += rotn_center[1]
-        return img.transform(img.size, Image.AFFINE, matrix, **kwargs)
+        return img.transform(
+            img.size, Image.Transform.AFFINE, matrix, **kwargs
+        )
     else:
         return img.rotate(degrees, resample=kwargs["resample"])
 
@@ -348,8 +362,12 @@ class AugmentOp:
         self.magnitude = magnitude
         self.hparams = hparams.copy()
         self.kwargs = {
-            "fillcolor": hparams["img_mean"] if "img_mean" in hparams else _FILL,
-            "resample": hparams["interpolation"] if "interpolation" in hparams else _RANDOM_INTERPOLATION,
+            "fillcolor": hparams["img_mean"]
+            if "img_mean" in hparams
+            else _FILL,
+            "resample": hparams["interpolation"]
+            if "interpolation" in hparams
+            else _RANDOM_INTERPOLATION,
         }
 
         # If magnitude_std is > 0, we introduce some randomness
@@ -362,13 +380,20 @@ class AugmentOp:
         if self.prob < 1.0 and random.random() > self.prob:
             return img_list
         magnitude = self.magnitude
-        if self.magnitude_std and self.magnitude_std > 0:
-            magnitude = random.gauss(magnitude, self.magnitude_std)
+        if self.magnitude_std and self.magnitude_std > 0:  # type: ignore
+            magnitude = random.gauss(magnitude, self.magnitude_std)  # type: ignore
         magnitude = min(_MAX_LEVEL, max(0, magnitude))  # clip to valid range
-        level_args = self.level_fn(magnitude, self.hparams) if self.level_fn is not None else ()
+        level_args = (
+            self.level_fn(magnitude, self.hparams)
+            if self.level_fn is not None
+            else ()
+        )
 
         if isinstance(img_list, list):
-            return [self.aug_fn(img, *level_args, **self.kwargs) for img in img_list]
+            return [
+                self.aug_fn(img, *level_args, **self.kwargs)
+                for img in img_list
+            ]
         else:
             return self.aug_fn(img_list, *level_args, **self.kwargs)
 
@@ -452,7 +477,9 @@ _RAND_CHOICE_WEIGHTS_1 = {
 
 def _select_rand_weights(weight_idx=0, transforms=None):
     transforms = transforms or _RAND_TRANSFORMS
-    assert weight_idx == 0 or weight_idx == 1  # only two sets of weights currently
+    assert (
+        weight_idx == 0 or weight_idx == 1
+    )  # only two sets of weights currently
     if weight_idx == 0:
         rand_weights = _RAND_CHOICE_WEIGHTS_0
     elif weight_idx == 1:
@@ -465,7 +492,10 @@ def _select_rand_weights(weight_idx=0, transforms=None):
 def rand_augment_ops(magnitude=10, hparams=None, transforms=None):
     hparams = hparams or _HPARAMS_DEFAULT
     transforms = transforms or _RAND_TRANSFORMS
-    return [AugmentOp(name, prob=0.5, magnitude=magnitude, hparams=hparams) for name in transforms]
+    return [
+        AugmentOp(name, prob=0.5, magnitude=magnitude, hparams=hparams)
+        for name in transforms
+    ]
 
 
 class RandAugment:
@@ -505,7 +535,9 @@ def rand_augment_transform(config_str, hparams):
     :param hparams: Other hparams (kwargs) for the RandAugmentation scheme
     :return: A PyTorch compatible Transform
     """
-    magnitude = _MAX_LEVEL  # default to _MAX_LEVEL for magnitude (currently 10)
+    magnitude = (
+        _MAX_LEVEL  # default to _MAX_LEVEL for magnitude (currently 10)
+    )
     num_layers = 2  # default to 2 ops per image
     weight_idx = None  # default to no probability weights for op choice
     transforms = _RAND_TRANSFORMS
@@ -531,6 +563,10 @@ def rand_augment_transform(config_str, hparams):
             weight_idx = int(val)
         else:
             assert NotImplementedError
-    ra_ops = rand_augment_ops(magnitude=magnitude, hparams=hparams, transforms=transforms)
-    choice_weights = None if weight_idx is None else _select_rand_weights(weight_idx)
+    ra_ops = rand_augment_ops(
+        magnitude=magnitude, hparams=hparams, transforms=transforms
+    )
+    choice_weights = (
+        None if weight_idx is None else _select_rand_weights(weight_idx)
+    )
     return RandAugment(ra_ops, num_layers, choice_weights=choice_weights)

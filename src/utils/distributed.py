@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from src.utils.logging import get_logger
+from src.utils.logging import get_logger  # type: ignore
 
 logger = get_logger()
 
@@ -37,13 +37,17 @@ def init_distributed(port=37129, rank_and_world_size=(None, None)):
             rank = int(os.environ["SLURM_PROCID"])
             os.environ["MASTER_ADDR"] = os.environ["HOSTNAME"]
         except Exception:
-            logger.info("SLURM vars not set (distributed training not available)")
+            logger.info(
+                "SLURM vars not set (distributed training not available)"
+            )
             world_size, rank = 1, 0
             return world_size, rank
 
     try:
         os.environ["MASTER_PORT"] = str(port)
-        torch.distributed.init_process_group(backend="nccl", world_size=world_size, rank=rank)
+        torch.distributed.init_process_group(
+            backend="nccl", world_size=world_size, rank=rank
+        )
     except Exception as e:
         world_size, rank = 1, 0
         logger.info(f"Rank: {rank}. Distributed training not available {e}")
@@ -52,21 +56,33 @@ def init_distributed(port=37129, rank_and_world_size=(None, None)):
 
 
 class AllGather(torch.autograd.Function):
-
     @staticmethod
     def forward(ctx, x):
-        if dist.is_available() and dist.is_initialized() and (dist.get_world_size() > 1):
+        if (
+            dist.is_available()
+            and dist.is_initialized()
+            and (dist.get_world_size() > 1)
+        ):
             x = x.contiguous()
-            outputs = [torch.zeros_like(x) for _ in range(dist.get_world_size())]
+            outputs = [
+                torch.zeros_like(x) for _ in range(dist.get_world_size())
+            ]
             dist.all_gather(outputs, x)
             return torch.cat(outputs, 0)
         return x
 
     @staticmethod
-    def backward(ctx, grads):
-        if dist.is_available() and dist.is_initialized() and (dist.get_world_size() > 1):
+    def backward(ctx, *grad_outputs):
+        grads = grad_outputs[0]
+        if (
+            dist.is_available()
+            and dist.is_initialized()
+            and (dist.get_world_size() > 1)
+        ):
             s = (grads.shape[0] // dist.get_world_size()) * dist.get_rank()
-            e = (grads.shape[0] // dist.get_world_size()) * (dist.get_rank() + 1)
+            e = (grads.shape[0] // dist.get_world_size()) * (
+                dist.get_rank() + 1
+            )
             grads = grads.contiguous()
             dist.all_reduce(grads)
             return grads[s:e]
@@ -74,28 +90,34 @@ class AllGather(torch.autograd.Function):
 
 
 class AllReduceSum(torch.autograd.Function):
-
     @staticmethod
     def forward(ctx, x):
-        if dist.is_available() and dist.is_initialized() and (dist.get_world_size() > 1):
+        if (
+            dist.is_available()
+            and dist.is_initialized()
+            and (dist.get_world_size() > 1)
+        ):
             x = x.contiguous()
             dist.all_reduce(x)
         return x
 
     @staticmethod
-    def backward(ctx, grads):
-        return grads
+    def backward(ctx, *grad_outputs):
+        return grad_outputs[0]
 
 
 class AllReduce(torch.autograd.Function):
-
     @staticmethod
     def forward(ctx, x):
-        if dist.is_available() and dist.is_initialized() and (dist.get_world_size() > 1):
+        if (
+            dist.is_available()
+            and dist.is_initialized()
+            and (dist.get_world_size() > 1)
+        ):
             x = x.contiguous() / dist.get_world_size()
             dist.all_reduce(x)
         return x
 
     @staticmethod
-    def backward(ctx, grads):
-        return grads
+    def backward(ctx, *grad_outputs):
+        return grad_outputs[0]
