@@ -60,7 +60,7 @@ parser.add_argument(
 parser.add_argument(
     "--dataset_id",
     type=str,
-    default=None,
+    default="10b538da314e4a2d880c60b8a9f64935",
     help="ClearML dataset ID — downloads on remote agent and overrides "
     + "data paths in config",
 )
