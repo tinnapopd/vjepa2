@@ -2,6 +2,9 @@ eval_name: video_classification_frozen
 folder: ./output/evals_2_1/vitG-384/weaponized_2cls
 resume_checkpoint: true
 tag: weaponized-2cls-vitg16-384
+nodes: 1
+tasks_per_node: 1
+cpus_per_task: 12
 num_workers: 8
 snapshot_freq: 5
 
