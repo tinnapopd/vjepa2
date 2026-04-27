@@ -7,10 +7,16 @@ Create Clean Data Set (find duration and number of videos), and separate into 3 
 - Fight
 - Background
 
-## [ ] Training
+## [] Training
 
-- Try ViT-G/16 first (if fail, try to use the smaller model)
-- Train Attentive Probe (classify) just 1 epoch - DO NOT use batch size 1, 
+### Try ViT-G/16 first (if fail, try to use the smaller model)
+```text
+vitb: e1c3e0025a5c401c84a263c8dc30d1d6
+vitl: 
+vitg: 
+```
+
+### Train Attentive Probe (classify) just 1 epoch - DO NOT use batch size 1, 
 and plot acc/loss graphs
 
 ## [] Experiments
