@@ -319,8 +319,13 @@ if __name__ == "__main__":
                 devices=["cuda:0"],
             )
     else:
+        processes = []
         for rank in range(num_gpus):
-            mp.Process(
+            p = mp.Process(
                 target=process_main,
                 args=(args, rank, args.fname, num_gpus, args.devices),
-            ).start()
+            )
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
