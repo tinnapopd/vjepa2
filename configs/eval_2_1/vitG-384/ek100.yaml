@@ -1,9 +1,9 @@
 nodes: 8
 tasks_per_node: 8
 cpus_per_task: 12
-tag: ek100-vitG16-384
+tag: ek100-vitg16-384
 eval_name: action_anticipation_frozen
-folder: /your_folder/evals_2_1/vitG-384/ek100
+folder: /your_folder/evals_2_1/vitg-384/ek100
 resume_checkpoint: true
 experiment:
   classifier:
@@ -166,7 +166,7 @@ experiment:
         final_lr: 0.0
         warmup: 0.
 model_kwargs:
-  checkpoint: /your_vjepa2_1_checkpoints/vjepa2_1_vitG_384.pt
+  checkpoint: /your_vjepa2_1_checkpoints/vjepa2_1_vitg_384.pt
   module_name: evals.action_anticipation_frozen.modelcustom.vit_encoder_predictor_concat_ar
   wrapper_kwargs:
     no_predictor: false
@@ -175,7 +175,7 @@ model_kwargs:
   pretrain_kwargs:
     use_v2_1: true
     encoder:
-      model_name: vit_gigantic_xformers
+      model_name: vit_giant_xformers
       checkpoint_key: target_encoder
       img_temporal_dim_size: 1
       tubelet_size: 2

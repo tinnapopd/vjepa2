@@ -1,9 +1,9 @@
 app: vjepa_2_1
-nodes: 32
+nodes: 16
 tasks_per_node: 8
-cpus_per_task: 32
+cpus_per_task: 16
 mem_per_gpu: 220G
-folder: /your_folder/pretrain_2_1/16.8.vitG.256px.16f
+folder: /your_folder/pretrain_2_1/16.8.vitg.256px.16f
 data:
   dataset_type: VideoDataset
   datasets:
@@ -14,7 +14,7 @@ data:
   - 0.335
   - 0.100
   - 0.565
-  batch_size: 12
+  batch_size: 24
   crop_size: 256
   patch_size: 16
   dataset_fpcs:
@@ -44,7 +44,7 @@ loss:
   weight_distance_loss: true
 
 img_data:
-  batch_size: 36
+  batch_size: 72
   crop_size: 256
   dataset_fpcs:
   - 1
@@ -116,7 +116,7 @@ model:
   - -1
   - -1
   modality_embedding: true
-  model_name: vit_gigantic_xformers
+  model_name: vit_giant_xformers
   n_registers: 0
   n_registers_predictor: 0
   normalize_predictor: false

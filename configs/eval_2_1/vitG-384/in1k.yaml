@@ -1,10 +1,10 @@
 cpus_per_task: 16
 eval_name: image_classification_frozen
-folder: /your_folder/evals_2_1/vitG-384/in1k
+folder: /your_folder/evals_2_1/vitg-384/in1k
 mem_per_gpu: 220G
 nodes: 16
 resume_checkpoint: true
-tag: in1k-vitG16-384-18f
+tag: in1k-vitg16-384-18f
 tasks_per_node: 8
 experiment:
   classifier:
@@ -147,13 +147,13 @@ experiment:
     num_epochs: 20
     use_bfloat16: true
 model_kwargs:
-  checkpoint: /your_vjepa2_1_checkpoints/vjepa2_1_vitG_384.pt
+  checkpoint: /your_vjepa2_1_checkpoints/vjepa2_1_vitg_384.pt
   module_name: evals.image_classification_frozen.modelcustom.vit_encoder
   pretrain_kwargs:
     encoder:
       checkpoint_key: target_encoder
       img_temporal_dim_size: 1
-      model_name: vit_gigantic_xformers
+      model_name: vit_giant_xformers
       patch_size: 16
       tubelet_size: 2
       uniform_power: true

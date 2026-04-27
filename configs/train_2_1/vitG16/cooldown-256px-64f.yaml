@@ -1,9 +1,9 @@
 app: vjepa_2_1
-nodes: 64
+nodes: 32
 tasks_per_node: 8
-cpus_per_task: 64
+cpus_per_task: 32
 mem_per_gpu: 220G
-folder: /your_folder/cooldown_2_1/16.8.vitG.256px.16f
+folder: /your_folder/cooldown_2_1/16.8.vitg.256px.16f
 data:
   dataset_type: VideoDataset
   datasets:
@@ -14,7 +14,7 @@ data:
   - 0.335
   - 0.100
   - 0.565
-  batch_size: 6
+  batch_size: 12
   crop_size: 256
   dataset_fpcs:
   - 64
@@ -38,7 +38,7 @@ data_aug:
   reprob: 0.0
 
 img_data:
-  batch_size: 36
+  batch_size: 72
   crop_size: 256
   dataset_fpcs:
   - 1
@@ -115,7 +115,7 @@ model:
   lambda_value_img: 0.5
   lambda_value_vid: 0.5
   modality_embedding: true
-  model_name: vit_gigantic_xformers
+  model_name: vit_giant_xformers
   n_registers: 0
   normalize_predictor: false
   pred_depth: 24
@@ -127,7 +127,7 @@ model:
   use_rope: true
   zero_init_mask_tokens: true
 optimization:
-  anneal_ckpt: /your_folder/pretrain_2_1/16.8.vitG.256px.16f/latest.pth.tar
+  anneal_ckpt: /your_folder/pretrain_2_1/16.8.vitg.256px.16f/latest.pth.tar
   ema:
   - 0.99925
   - 0.99925
