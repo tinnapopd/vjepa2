@@ -3,6 +3,7 @@ folder: ./output/evals_2_1/vitb-384/weaponized_3cls
 resume_checkpoint: true
 tag: weaponized-3cls-vitb16-384
 num_workers: 8
+snapshot_freq: 5
 
 experiment:
   classifier:
@@ -11,8 +12,8 @@ experiment:
 
   data:
     dataset_type: VideoDataset
-    dataset_train: /path/to/weaponized_3cls_train.csv    # ← UPDATE
-    dataset_val: /path/to/weaponized_3cls_val.csv        # ← UPDATE
+    dataset_train: data/weaponized_3cls_train.csv
+    dataset_val: data/weaponized_3cls_val.csv
     num_classes: 3          # background (0), weaponized (1), fighting (2)
     resolution: 384
     frames_per_clip: 16
@@ -21,7 +22,7 @@ experiment:
     num_views_per_segment: 3
 
   optimization:
-    num_epochs: 30
+    num_epochs: 1
     batch_size: 8
     use_bfloat16: true
     use_pos_embed: false
@@ -34,7 +35,7 @@ experiment:
       - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.0001, start_lr: 0.0001, final_lr: 0.0, warmup: 0.0 }
 
 model_kwargs:
-  checkpoint: /path/to/vjepa2_1_vitb_dist_vitG_384.pt   # ← UPDATE
+  checkpoint: pretrained-models/vjepa2_1_vitb_dist_vitG_384.pt
   module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
   pretrain_kwargs:
     encoder:

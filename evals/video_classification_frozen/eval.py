@@ -25,13 +25,15 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from evals.video_classification_frozen.models import init_module
-from evals.video_classification_frozen.utils import make_transforms
-from src.datasets.data_manager import init_data
-from src.models.attentive_pooler import AttentiveClassifier
-from src.utils.checkpoint_loader import robust_checkpoint_loader
-from src.utils.distributed import AllReduce, init_distributed
-from src.utils.logging import AverageMeter, CSVLogger
+from evals.video_classification_frozen.models import init_module  # type: ignore
+from evals.video_classification_frozen.utils import make_transforms  # type: ignore
+from src.datasets.data_manager import init_data  # type: ignore
+from src.models.attentive_pooler import AttentiveClassifier  # type: ignore
+from src.utils.checkpoint_loader import robust_checkpoint_loader  # type: ignore
+from src.utils.distributed import AllReduce, init_distributed  # type: ignore
+from src.utils.logging import AverageMeter, CSVLogger  # type: ignore
+
+from clearml import Logger as ClearMLLogger, Task as ClearMLTask, OutputModel
 
 logging.basicConfig()
 logger = logging.getLogger()
@@ -58,8 +60,11 @@ def main(args_eval, resume_preempt=False):
 
     # -- EXPERIMENT
     pretrain_folder = args_eval.get("folder", None)
-    resume_checkpoint = args_eval.get("resume_checkpoint", False) or resume_preempt
+    resume_checkpoint = (
+        args_eval.get("resume_checkpoint", False) or resume_preempt
+    )
     eval_tag = args_eval.get("tag", None)
+    snapshot_freq = args_eval.get("snapshot_freq", 5)
     num_workers = args_eval.get("num_workers", 12)
 
     # -- PRETRAIN
@@ -133,7 +138,14 @@ def main(args_eval, resume_preempt=False):
 
     # -- make csv_logger
     if rank == 0:
-        csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_acc"), ("%.5f", "val_acc"))
+        csv_logger = CSVLogger(
+            log_file,
+            ("%d", "epoch"),
+            ("%.5f", "train_acc"),
+            ("%.5f", "val_acc"),
+            ("%.5f", "train_loss"),
+            ("%.5f", "val_loss"),
+        )
 
     # Initialize model
 
@@ -158,7 +170,9 @@ def main(args_eval, resume_preempt=False):
         ).to(device)
         for _ in opt_kwargs
     ]
-    classifiers = [DistributedDataParallel(c, static_graph=True) for c in classifiers]
+    classifiers = [
+        DistributedDataParallel(c, static_graph=True) for c in classifiers
+    ]
     print(classifiers[0])
 
     train_loader, train_sampler = make_dataloader(
@@ -229,7 +243,9 @@ def main(args_eval, resume_preempt=False):
         save_dict = {
             "classifiers": all_classifier_dicts,
             "opt": all_opt_dicts,
-            "scaler": None if scaler is None else [s.state_dict() for s in scaler],
+            "scaler": None
+            if scaler is None
+            else [s.state_dict() for s in scaler],
             "epoch": epoch,
             "batch_size": batch_size,
             "world_size": world_size,
@@ -237,14 +253,24 @@ def main(args_eval, resume_preempt=False):
         if rank == 0:
             torch.save(save_dict, latest_path)
 
+    # -- ClearML logger
+    clearml_logger = None
+    if rank == 0:
+        clearml_logger = ClearMLLogger.current_logger()
+
+    # -- global step counters for ClearML step-level logging
+    train_global_step = start_epoch * ipe
+    val_global_step = start_epoch * len(val_loader)
+
     # TRAIN LOOP
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
         train_sampler.set_epoch(epoch)
         if val_only:
             train_acc = -1.0
+            train_loss = 0.0
         else:
-            train_acc = run_one_epoch(
+            train_acc, train_loss, train_global_step = run_one_epoch(
                 device=device,
                 training=True,
                 encoder=encoder,
@@ -255,9 +281,12 @@ def main(args_eval, resume_preempt=False):
                 wd_scheduler=wd_scheduler,
                 data_loader=train_loader,
                 use_bfloat16=use_bfloat16,
+                clearml_logger=clearml_logger,
+                global_step=train_global_step,
+                phase="Train",
             )
 
-        val_acc = run_one_epoch(
+        val_acc, val_loss, val_global_step = run_one_epoch(
             device=device,
             training=False,
             encoder=encoder,
@@ -268,16 +297,82 @@ def main(args_eval, resume_preempt=False):
             wd_scheduler=wd_scheduler,
             data_loader=val_loader,
             use_bfloat16=use_bfloat16,
+            clearml_logger=clearml_logger,
+            global_step=val_global_step,
+            phase="Validation",
         )
 
-        logger.info("[%5d] train: %.3f%% test: %.3f%%" % (epoch + 1, train_acc, val_acc))
+        logger.info(
+            "[%5d] train: %.3f%% (loss: %.4f) test: %.3f%% (loss: %.4f)"
+            % (epoch + 1, train_acc, train_loss, val_acc, val_loss)
+        )
         if rank == 0:
-            csv_logger.log(epoch + 1, train_acc, val_acc)
+            csv_logger.log(epoch + 1, train_acc, val_acc, train_loss, val_loss)  # type: ignore
+            # -- Epoch-level ClearML logging
+            if clearml_logger:
+                clearml_logger.report_scalar(
+                    "Epoch Accuracy",
+                    "Train",
+                    value=train_acc,
+                    iteration=epoch + 1,
+                )
+                clearml_logger.report_scalar(
+                    "Epoch Accuracy",
+                    "Validation",
+                    value=val_acc,
+                    iteration=epoch + 1,
+                )
+                clearml_logger.report_scalar(
+                    "Epoch Loss",
+                    "Train",
+                    value=train_loss,
+                    iteration=epoch + 1,
+                )
+                clearml_logger.report_scalar(
+                    "Epoch Loss",
+                    "Validation",
+                    value=val_loss,
+                    iteration=epoch + 1,
+                )
 
         if val_only:
             return
 
         save_checkpoint(epoch + 1)
+
+        # Upload model snapshot to ClearML every snapshot_freq epochs
+        is_final_epoch = (epoch + 1) == num_epochs
+        should_snapshot = (
+            snapshot_freq > 0 and (epoch + 1) % snapshot_freq == 0
+        )
+        if rank == 0 and (should_snapshot or is_final_epoch):
+            current_task = ClearMLTask.current_task()
+            if current_task and os.path.exists(latest_path):
+                snapshot_model = OutputModel(
+                    task=current_task,
+                    name=f"{eval_tag}-classifier-e{epoch + 1}",
+                    framework="PyTorch",
+                )
+                snapshot_model.update_weights(
+                    weights_filename=latest_path,
+                    auto_delete_file=False,
+                )
+                logger.info(
+                    f"Uploaded snapshot model (epoch {epoch + 1}) to ClearML"
+                )
+
+    # Upload final trained model to ClearML
+    if rank == 0:
+        current_task = ClearMLTask.current_task()
+        if current_task and os.path.exists(latest_path):
+            current_task.update_output_model(
+                model_path=latest_path,
+                model_name=f"{eval_tag}-classifier",
+                auto_delete_file=False,
+            )
+            logger.info("Uploaded trained model to ClearML")
+            current_task.flush(wait_for_uploads=True)
+            logger.info("ClearML upload flush complete")
 
 
 def run_one_epoch(
@@ -291,6 +386,9 @@ def run_one_epoch(
     wd_scheduler,
     data_loader,
     use_bfloat16,
+    clearml_logger=None,
+    global_step=0,
+    phase="Train",
 ):
 
     for c in classifiers:
@@ -298,15 +396,20 @@ def run_one_epoch(
 
     criterion = torch.nn.CrossEntropyLoss()
     top1_meters = [AverageMeter() for _ in classifiers]
+    loss_meters = [AverageMeter() for _ in classifiers]
     for itr, data in enumerate(data_loader):
         if training:
             [s.step() for s in scheduler]
             [wds.step() for wds in wd_scheduler]
 
-        with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_bfloat16):
+        with torch.cuda.amp.autocast(
+            dtype=torch.float16, enabled=use_bfloat16
+        ):
             # Load data and put on GPU
             clips = [
-                [dij.to(device, non_blocking=True) for dij in di]  # iterate over spatial views of clip
+                [
+                    dij.to(device, non_blocking=True) for dij in di
+                ]  # iterate over spatial views of clip
                 for di in data[0]  # iterate over temporal index of clip
             ]
             clip_indices = [d.to(device, non_blocking=True) for d in data[2]]
@@ -322,17 +425,35 @@ def run_one_epoch(
                 outputs = [[c(o) for o in outputs] for c in classifiers]
 
         # Compute loss
-        losses = [[criterion(o, labels) for o in coutputs] for coutputs in outputs]
+        losses = [
+            [criterion(o, labels) for o in coutputs] for coutputs in outputs
+        ]
         with torch.no_grad():
-            outputs = [sum([F.softmax(o, dim=1) for o in coutputs]) / len(coutputs) for coutputs in outputs]
-            top1_accs = [100.0 * coutputs.max(dim=1).indices.eq(labels).sum() / batch_size for coutputs in outputs]
+            # Track per-head loss (mean across views)
+            for lm, li in zip(loss_meters, losses):
+                head_loss = sum(float(lij) for lij in li) / len(li)
+                lm.update(head_loss)
+
+            outputs = [
+                sum([F.softmax(o, dim=1) for o in coutputs]) / len(coutputs)
+                for coutputs in outputs
+            ]
+            top1_accs = [
+                100.0
+                * coutputs.max(dim=1).indices.eq(labels).sum()  # type: ignore
+                / batch_size
+                for coutputs in outputs
+            ]
             top1_accs = [float(AllReduce.apply(t1a)) for t1a in top1_accs]
             for t1m, t1a in zip(top1_meters, top1_accs):
                 t1m.update(t1a)
 
         if training:
             if use_bfloat16:
-                [[s.scale(lij).backward() for lij in li] for s, li in zip(scaler, losses)]
+                [
+                    [s.scale(lij).backward() for lij in li]
+                    for s, li in zip(scaler, losses)
+                ]
                 [s.step(o) for s, o in zip(scaler, optimizer)]
                 [s.update() for s in scaler]
             else:
@@ -341,35 +462,60 @@ def run_one_epoch(
             [o.zero_grad() for o in optimizer]
 
         _agg_top1 = np.array([t1m.avg for t1m in top1_meters])
+        _agg_loss = np.array([lm.avg for lm in loss_meters])
+        global_step += 1
+
+        # -- Step-level ClearML logging
+        if clearml_logger:
+            clearml_logger.report_scalar(
+                "Step Accuracy",
+                phase,
+                value=_agg_top1.max(),
+                iteration=global_step,
+            )
+            clearml_logger.report_scalar(
+                "Step Loss",
+                phase,
+                value=_agg_loss.min(),
+                iteration=global_step,
+            )
+
         if itr % 10 == 0:
             logger.info(
-                "[%5d] %.3f%% [%.3f%% %.3f%%] [mem: %.2e]"
+                "[%5d] %.3f%% (loss: %.4f) [%.3f%% %.3f%%] [mem: %.2e]"
                 % (
                     itr,
                     _agg_top1.max(),
+                    _agg_loss.min(),
                     _agg_top1.mean(),
                     _agg_top1.min(),
                     torch.cuda.max_memory_allocated() / 1024.0**2,
                 )
             )
 
-    return _agg_top1.max()
+    return _agg_top1.max(), _agg_loss.min(), global_step  # type: ignore
 
 
 def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
-    checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    checkpoint = robust_checkpoint_loader(
+        r_path, map_location=torch.device("cpu")
+    )
     logger.info(f"read-path: {r_path}")
 
     # -- loading encoder
     pretrained_dict = checkpoint["classifiers"]
-    msg = [c.load_state_dict(pd) for c, pd in zip(classifiers, pretrained_dict)]
+    msg = [
+        c.load_state_dict(pd) for c, pd in zip(classifiers, pretrained_dict)
+    ]
 
     if val_only:
         logger.info(f"loaded pretrained classifier from epoch with msg: {msg}")
         return classifiers, opt, scaler, 0
 
     epoch = checkpoint["epoch"]
-    logger.info(f"loaded pretrained classifier from epoch {epoch} with msg: {msg}")
+    logger.info(
+        f"loaded pretrained classifier from epoch {epoch} with msg: {msg}"
+    )
 
     # -- loading optimizer
     [o.load_state_dict(pd) for o, pd in zip(opt, checkpoint["opt"])]
@@ -390,20 +536,28 @@ def load_pretrained(encoder, pretrained, checkpoint_key="target_encoder"):
     except Exception:
         pretrained_dict = checkpoint["encoder"]
 
-    pretrained_dict = {k.replace("module.", ""): v for k, v in pretrained_dict.items()}
-    pretrained_dict = {k.replace("backbone.", ""): v for k, v in pretrained_dict.items()}
+    pretrained_dict = {
+        k.replace("module.", ""): v for k, v in pretrained_dict.items()
+    }
+    pretrained_dict = {
+        k.replace("backbone.", ""): v for k, v in pretrained_dict.items()
+    }
     for k, v in encoder.state_dict().items():
         if k not in pretrained_dict:
             logger.info(f"key '{k}' could not be found in loaded state dict")
         elif pretrained_dict[k].shape != v.shape:
             logger.info(f"{pretrained_dict[k].shape} | {v.shape}")
-            logger.info(f"key '{k}' is of different shape in model and loaded state dict")
+            logger.info(
+                f"key '{k}' is of different shape in model and loaded state dict"
+            )
             exit(1)
             pretrained_dict[k] = v
     msg = encoder.load_state_dict(pretrained_dict, strict=False)
     print(encoder)
     logger.info(f"loaded pretrained model with msg: {msg}")
-    logger.info(f"loaded pretrained encoder from epoch: {checkpoint['epoch']}\n path: {pretrained}")
+    logger.info(
+        f"loaded pretrained encoder from epoch: {checkpoint['epoch']}\n path: {pretrained}"
+    )
     del checkpoint
     return encoder
 
@@ -465,13 +619,21 @@ def make_dataloader(
     return data_loader, data_sampler
 
 
-def init_opt(classifiers, iterations_per_epoch, opt_kwargs, num_epochs, use_bfloat16=False):
+def init_opt(
+    classifiers,
+    iterations_per_epoch,
+    opt_kwargs,
+    num_epochs,
+    use_bfloat16=False,
+):
     optimizers, schedulers, wd_schedulers, scalers = [], [], [], []
     for c, kwargs in zip(classifiers, opt_kwargs):
         param_groups = [
             {
                 "params": (p for n, p in c.named_parameters()),
-                "mc_warmup_steps": int(kwargs.get("warmup") * iterations_per_epoch),
+                "mc_warmup_steps": int(
+                    kwargs.get("warmup") * iterations_per_epoch
+                ),
                 "mc_start_lr": kwargs.get("start_lr"),
                 "mc_ref_lr": kwargs.get("ref_lr"),
                 "mc_final_lr": kwargs.get("final_lr"),
@@ -481,14 +643,21 @@ def init_opt(classifiers, iterations_per_epoch, opt_kwargs, num_epochs, use_bflo
         ]
         logger.info("Using AdamW")
         optimizers += [torch.optim.AdamW(param_groups)]
-        schedulers += [WarmupCosineLRSchedule(optimizers[-1], T_max=int(num_epochs * iterations_per_epoch))]
-        wd_schedulers += [CosineWDSchedule(optimizers[-1], T_max=int(num_epochs * iterations_per_epoch))]
-        scalers += [torch.cuda.amp.GradScaler() if use_bfloat16 else None]
+        schedulers += [
+            WarmupCosineLRSchedule(
+                optimizers[-1], T_max=int(num_epochs * iterations_per_epoch)
+            )
+        ]
+        wd_schedulers += [
+            CosineWDSchedule(
+                optimizers[-1], T_max=int(num_epochs * iterations_per_epoch)
+            )
+        ]
+        scalers += [torch.cuda.amp.GradScaler() if use_bfloat16 else None]  # type:ignore
     return optimizers, scalers, schedulers, wd_schedulers
 
 
 class WarmupCosineLRSchedule(object):
-
     def __init__(self, optimizer, T_max, last_epoch=-1):
         self.optimizer = optimizer
         self.T_max = T_max
@@ -507,16 +676,20 @@ class WarmupCosineLRSchedule(object):
                 new_lr = start_lr + progress * (ref_lr - start_lr)
             else:
                 # -- progress after warmup
-                progress = float(self._step - warmup_steps) / float(max(1, T_max))
+                progress = float(self._step - warmup_steps) / float(
+                    max(1, T_max)
+                )
                 new_lr = max(
                     final_lr,
-                    final_lr + (ref_lr - final_lr) * 0.5 * (1.0 + math.cos(math.pi * progress)),
+                    final_lr
+                    + (ref_lr - final_lr)
+                    * 0.5
+                    * (1.0 + math.cos(math.pi * progress)),
                 )
             group["lr"] = new_lr
 
 
 class CosineWDSchedule(object):
-
     def __init__(self, optimizer, T_max):
         self.optimizer = optimizer
         self.T_max = T_max
@@ -529,7 +702,9 @@ class CosineWDSchedule(object):
         for group in self.optimizer.param_groups:
             ref_wd = group.get("mc_ref_wd")
             final_wd = group.get("mc_final_wd")
-            new_wd = final_wd + (ref_wd - final_wd) * 0.5 * (1.0 + math.cos(math.pi * progress))
+            new_wd = final_wd + (ref_wd - final_wd) * 0.5 * (
+                1.0 + math.cos(math.pi * progress)
+            )
             if final_wd <= ref_wd:
                 new_wd = max(final_wd, new_wd)
             else:

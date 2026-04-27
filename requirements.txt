@@ -23,3 +23,5 @@ python-box
 scikit-image
 ftfy
 jupyter
+clearml
+boto3
