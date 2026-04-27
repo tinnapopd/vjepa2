@@ -30,3 +30,10 @@ app/vjepa_droid_v2/local/
 app/vjepa_droid_v3/local/
 app/vjepa_droid_v4/local/
 configs/local
+
+# MacOS
+.DS_Store
+
+# Models
+pretrained-models/*
+!pretrained-models/.gitkeep
