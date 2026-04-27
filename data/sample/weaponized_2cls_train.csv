@@ -1,0 +1,6 @@
+/path/to/dataset/train/background/bg_001.mp4 0
+/path/to/dataset/train/background/bg_002.mp4 0
+/path/to/dataset/train/background/bg_003.mp4 0
+/path/to/dataset/train/weaponized/wp_001.mp4 1
+/path/to/dataset/train/weaponized/wp_002.mp4 1
+/path/to/dataset/train/weaponized/wp_003.mp4 1

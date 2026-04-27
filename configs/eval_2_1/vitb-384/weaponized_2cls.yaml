@@ -1,0 +1,50 @@
+eval_name: video_classification_frozen
+folder: ./output/evals_2_1/vitb-384/weaponized_2cls
+resume_checkpoint: true
+tag: weaponized-2cls-vitb16-384
+num_workers: 8
+
+experiment:
+  classifier:
+    num_heads: 16
+    num_probe_blocks: 4
+
+  data:
+    dataset_type: VideoDataset
+    dataset_train: /path/to/weaponized_2cls_train.csv    # ← UPDATE
+    dataset_val: /path/to/weaponized_2cls_val.csv        # ← UPDATE
+    num_classes: 2          # background (0), weaponized (1)
+    resolution: 384
+    frames_per_clip: 16
+    frame_step: 4
+    num_segments: 1
+    num_views_per_segment: 3
+
+  optimization:
+    num_epochs: 30
+    batch_size: 8
+    use_bfloat16: true
+    use_pos_embed: false
+    multihead_kwargs:
+      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.001,  start_lr: 0.001,  final_lr: 0.0, warmup: 0.0 }
+      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.0003, start_lr: 0.0003, final_lr: 0.0, warmup: 0.0 }
+      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.0001, start_lr: 0.0001, final_lr: 0.0, warmup: 0.0 }
+      - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.001,  start_lr: 0.001,  final_lr: 0.0, warmup: 0.0 }
+      - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.0003, start_lr: 0.0003, final_lr: 0.0, warmup: 0.0 }
+      - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.0001, start_lr: 0.0001, final_lr: 0.0, warmup: 0.0 }
+
+model_kwargs:
+  checkpoint: /path/to/vjepa2_1_vitb_dist_vitG_384.pt   # ← UPDATE
+  module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
+  pretrain_kwargs:
+    encoder:
+      checkpoint_key: ema_encoder
+      img_temporal_dim_size: 1
+      model_name: vit_base
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+  wrapper_kwargs:
+    max_frames: 128
+    use_pos_embed: false

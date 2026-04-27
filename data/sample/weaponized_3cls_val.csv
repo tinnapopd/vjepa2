@@ -1,0 +1,6 @@
+/path/to/dataset/val/background/bg_101.mp4 0
+/path/to/dataset/val/background/bg_102.mp4 0
+/path/to/dataset/val/weaponized/wp_101.mp4 1
+/path/to/dataset/val/weaponized/wp_102.mp4 1
+/path/to/dataset/val/fighting/ft_101.mp4 2
+/path/to/dataset/val/fighting/ft_102.mp4 2
