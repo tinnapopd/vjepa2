@@ -114,7 +114,16 @@ class DROIDVideoDataset(torch.utils.data.Dataset):
         self.camera_views = camera_views
         self.h5_name = "trajectory.h5"
 
-        samples = list(pd.read_csv(data_path, header=None, delimiter=" ").values[:, 0])
+        try:
+            data = pd.read_csv(data_path, header=None, delimiter=",")
+            if data.shape[1] == 1:
+                raise ValueError
+        except (pd.errors.ParserError, ValueError):
+            try:
+                data = pd.read_csv(data_path, header=None, delimiter=" ")
+            except pd.errors.ParserError:
+                data = pd.read_csv(data_path, header=None, delimiter="::")
+        samples = list(data.values[:, 0])
         self.samples = samples
 
     def __getitem__(self, index):

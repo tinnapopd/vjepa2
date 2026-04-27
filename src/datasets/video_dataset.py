@@ -180,10 +180,15 @@ class VideoDataset(torch.utils.data.Dataset):
 
             if data_path[-4:] == ".csv":
                 try:
-                    data = pd.read_csv(data_path, header=None, delimiter=" ")
-                except pd.errors.ParserError:
-                    # In image captioning datasets where we have space, we use :: as delimiter.
-                    data = pd.read_csv(data_path, header=None, delimiter="::")
+                    data = pd.read_csv(data_path, header=None, delimiter=",")
+                    if data.shape[1] == 1:
+                        raise ValueError
+                except (pd.errors.ParserError, ValueError):
+                    try:
+                        data = pd.read_csv(data_path, header=None, delimiter=" ")
+                    except pd.errors.ParserError:
+                        # In image captioning datasets where we have space, we use :: as delimiter.
+                        data = pd.read_csv(data_path, header=None, delimiter="::")
                 samples += list(data.values[:, 0])
                 labels += list(data.values[:, 1])
                 num_samples = len(data)
