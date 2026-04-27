@@ -237,7 +237,11 @@ if __name__ == "__main__":
                     lines = f.readlines()
                 new_lines = []
                 for line in lines:
-                    parts = line.strip().split(" ")
+                    line_stripped = line.strip()
+                    if not line_stripped:
+                        continue
+                    delimiter = "," if "," in line_stripped else " "
+                    parts = line_stripped.split(delimiter)
                     if len(parts) >= 2:
                         video_rel_path = parts[0]
                         video_abs_path = os.path.join(
@@ -261,7 +265,7 @@ if __name__ == "__main__":
                                     video_rel_path  # keep original
                                 )
                         new_lines.append(
-                            f"{video_abs_path} {' '.join(parts[1:])}\n"
+                            f"{video_abs_path}{delimiter}{delimiter.join(parts[1:])}\n"
                         )
                     else:
                         new_lines.append(line)
