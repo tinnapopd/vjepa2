@@ -177,22 +177,62 @@ class VideoDataset(torch.utils.data.Dataset):
         samples, labels = [], []
         self.num_samples_per_dataset = []
         for data_path in self.data_paths:
-
             if data_path[-4:] == ".csv":
-                try:
-                    data = pd.read_csv(data_path, header=None, delimiter=",")
-                    if data.shape[1] == 1:
-                        raise ValueError
-                except (pd.errors.ParserError, ValueError):
-                    try:
-                        data = pd.read_csv(data_path, header=None, delimiter=" ")
-                    except pd.errors.ParserError:
-                        # In image captioning datasets where we have space, we use :: as delimiter.
-                        data = pd.read_csv(data_path, header=None, delimiter="::")
-                samples += list(data.values[:, 0])
-                labels += list(data.values[:, 1])
-                num_samples = len(data)
-                self.num_samples_per_dataset.append(num_samples)
+                with open(data_path, "r") as f:
+                    lines = f.read().splitlines()
+
+                curr_samples = []
+                curr_labels = []
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    if "::" in line:
+                        delim = "::"
+                    elif "," in line:
+                        delim = ","
+                    elif " " in line:
+                        delim = " "
+                    else:
+                        delim = None
+
+                    path, label = line, 0
+                    if delim:
+                        parts = line.rsplit(delim, 1)
+                        if len(parts) == 2:
+                            try:
+                                # Attempt to parse the second part as an integer label
+                                label = int(parts[1].strip())
+                                path = parts[0].strip()
+                            except ValueError:
+                                # If it's not an integer, it might be a string label or part of the path
+                                # We'll assume the string label is valid if it's not a path-like string
+                                # But for safety, let's keep it as string if it doesn't have slashes
+                                if (
+                                    "/" not in parts[1]
+                                    and "\\" not in parts[1]
+                                    and "." not in parts[1]
+                                ):
+                                    label = parts[1].strip()
+                                    path = parts[0].strip()
+                                else:
+                                    path = line
+                                    label = 0
+
+                    # Rewrite relative video paths into valid absolute paths
+                    if not os.path.isabs(path):
+                        path = os.path.join(
+                            os.path.dirname(os.path.abspath(data_path)), path
+                        )
+                        path = os.path.normpath(path)
+
+                    curr_samples.append(path)
+                    curr_labels.append(label)
+
+                samples += curr_samples
+                labels += curr_labels
+                self.num_samples_per_dataset.append(len(curr_samples))
 
             elif data_path[-4:] == ".npy":
                 data = np.load(data_path, allow_pickle=True)
@@ -209,7 +249,9 @@ class VideoDataset(torch.utils.data.Dataset):
         self.sample_weights = None
         if self.datasets_weights is not None:
             self.sample_weights = []
-            for dw, ns in zip(self.datasets_weights, self.num_samples_per_dataset):
+            for dw, ns in zip(
+                self.datasets_weights, self.num_samples_per_dataset
+            ):
                 self.sample_weights += [dw / ns] * ns
 
         self.samples = samples
@@ -338,7 +380,6 @@ class VideoDataset(torch.utils.data.Dataset):
 
         all_indices, clip_indices = [], []
         for i in range(self.num_clips):
-
             if partition_len > clip_len:
                 # If partition_len > clip len, then sample a random window of
                 # clip_len frames within the segment
@@ -347,7 +388,9 @@ class VideoDataset(torch.utils.data.Dataset):
                     end_indx = np.random.randint(clip_len, partition_len)
                 start_indx = end_indx - clip_len
                 indices = np.linspace(start_indx, end_indx, num=fpc)
-                indices = np.clip(indices, start_indx, end_indx - 1).astype(np.int64)
+                indices = np.clip(indices, start_indx, end_indx - 1).astype(
+                    np.int64
+                )
                 # --
                 indices = indices + i * partition_len
             else:
@@ -355,14 +398,19 @@ class VideoDataset(torch.utils.data.Dataset):
                 # then repeatedly append the last frame in the segment until
                 # we reach the desired clip length
                 if not self.allow_clip_overlap:
-                    indices = np.linspace(0, partition_len, num=partition_len // fstp)
+                    indices = np.linspace(
+                        0, partition_len, num=partition_len // fstp
+                    )
                     indices = np.concatenate(
                         (
                             indices,
-                            np.ones(fpc - partition_len // fstp) * partition_len,
+                            np.ones(fpc - partition_len // fstp)
+                            * partition_len,
                         )
                     )
-                    indices = np.clip(indices, 0, partition_len - 1).astype(np.int64)
+                    indices = np.clip(indices, 0, partition_len - 1).astype(
+                        np.int64
+                    )
                     # --
                     indices = indices + i * partition_len
 
@@ -370,18 +418,24 @@ class VideoDataset(torch.utils.data.Dataset):
                 # then start_indx of segment i+1 will lie within segment i
                 else:
                     sample_len = min(clip_len, len(vr)) - 1
-                    indices = np.linspace(0, sample_len, num=sample_len // fstp)
+                    indices = np.linspace(
+                        0, sample_len, num=sample_len // fstp
+                    )
                     indices = np.concatenate(
                         (
                             indices,
                             np.ones(fpc - sample_len // fstp) * sample_len,
                         )
                     )
-                    indices = np.clip(indices, 0, sample_len - 1).astype(np.int64)
+                    indices = np.clip(indices, 0, sample_len - 1).astype(
+                        np.int64
+                    )
                     # --
                     clip_step = 0
                     if len(vr) > clip_len:
-                        clip_step = (len(vr) - clip_len) // (self.num_clips - 1)
+                        clip_step = (len(vr) - clip_len) // (
+                            self.num_clips - 1
+                        )
                     indices = indices + i * clip_step
 
             clip_indices.append(indices)
