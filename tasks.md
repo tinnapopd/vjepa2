@@ -13,13 +13,15 @@ dataset_id: 10b538da314e4a2d880c60b8a9f64935
 
 ### Try ViT-G/16 first (if fail, try to use the smaller model)
 ```text
-vitb: e1c3e0025a5c401c84a263c8dc30d1d6
-vitl: 968dae44ab5c46ae8526cfe133640d6b
-vitg: 5a333575272144abbde546282fd30f3b
+[x] vitb: e1c3e0025a5c401c84a263c8dc30d1d6
+[x] vitl: 968dae44ab5c46ae8526cfe133640d6b
+[x] vitg: 5a333575272144abbde546282fd30f3b
 ```
 
 ### Train Attentive Probe (classify) just 1 epoch - DO NOT use batch size 1, 
 and plot acc/loss graphs
+
+## [] Evaluation
 
 ## [] Experiments
 - Improve YOLOv26 with P2-Head
