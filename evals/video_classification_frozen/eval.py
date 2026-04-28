@@ -345,7 +345,7 @@ def main(args_eval, resume_preempt=False):
         should_snapshot = (
             snapshot_freq > 0 and (epoch + 1) % snapshot_freq == 0
         )
-        if rank == 0 and (should_snapshot or is_final_epoch):
+        if rank == 0 and should_snapshot and not is_final_epoch:
             current_task = ClearMLTask.current_task()
             if current_task and os.path.exists(latest_path):
                 snapshot_model = OutputModel(

@@ -28,11 +28,6 @@ experiment:
     use_pos_embed: false
     multihead_kwargs:
       - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.001,  start_lr: 0.001,  final_lr: 0.0, warmup: 0.0 }
-      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.0003, start_lr: 0.0003, final_lr: 0.0, warmup: 0.0 }
-      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.0001, start_lr: 0.0001, final_lr: 0.0, warmup: 0.0 }
-      - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.001,  start_lr: 0.001,  final_lr: 0.0, warmup: 0.0 }
-      - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.0003, start_lr: 0.0003, final_lr: 0.0, warmup: 0.0 }
-      - { weight_decay: 0.1,  final_weight_decay: 0.1,  lr: 0.0001, start_lr: 0.0001, final_lr: 0.0, warmup: 0.0 }
 
 model_kwargs:
   checkpoint: pretrained-models/vjepa2_1_vitb_dist_vitG_384.pt

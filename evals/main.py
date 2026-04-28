@@ -177,6 +177,7 @@ if __name__ == "__main__":
         task_name=clearml_task_name,
         task_type=Task.TaskTypes.training,
         output_uri=args.output_uri or "s3://ai-dataset-clearml/clearml/models",
+        auto_connect_frameworks={'pytorch': False},
     )
 
     task = Task.init(**init_kwargs)
