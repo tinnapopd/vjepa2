@@ -9,7 +9,7 @@ Create Clean Data Set (find duration and number of videos), and separate into 3 
 
 dataset_id: 10b538da314e4a2d880c60b8a9f64935
 
-## [] Training
+## [x] Training
 
 ### Train on both weaponized_2cls and weaponized_3cls
 
