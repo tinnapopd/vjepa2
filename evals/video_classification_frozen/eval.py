@@ -672,7 +672,7 @@ class WarmupCosineLRSchedule(object):
             warmup_steps = group.get("mc_warmup_steps")
             T_max = self.T_max - warmup_steps
             if self._step < warmup_steps:
-                progress = float(self._step) / float(max(1, warmup_steps))
+                progress = self._step / float(max(1, warmup_steps))
                 new_lr = start_lr + progress * (ref_lr - start_lr)
             else:
                 # -- progress after warmup
