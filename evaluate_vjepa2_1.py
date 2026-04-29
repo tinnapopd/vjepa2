@@ -88,9 +88,9 @@ def parse_args():
     p.add_argument(
         "--model-name",
         type=str,
-        default="vit_giant_xformers",
-        help="Encoder architecture name (e.g. vit_base, vit_large, "
-        "vit_giant_xformers, vit_gigantic_xformers)",
+        default="auto",
+        help="Encoder architecture name, or 'auto' to detect from checkpoint "
+        "(e.g. vit_base, vit_large, vit_giant_xformers, vit_gigantic_xformers)",
     )
     p.add_argument(
         "--checkpoint-key",
@@ -207,6 +207,46 @@ def build_eval_transform(resolution: int):
 # ──────────────────────────────────────────────────────────────────────
 #  Model loading
 # ──────────────────────────────────────────────────────────────────────
+def _detect_model_from_checkpoint(state: dict) -> tuple[str, int, int]:
+    """Detect ViT architecture from checkpoint state dict.
+
+    Returns (model_name, embed_dim, depth) by inspecting weight shapes.
+    """
+    # Detect embed_dim from first block's norm1.weight
+    embed_dim = None
+    for k, v in state.items():
+        if "blocks.0.norm1.weight" in k:
+            embed_dim = v.shape[0]
+            break
+
+    # Detect depth by counting unique block indices
+    block_indices = set()
+    for k in state.keys():
+        if "blocks." in k:
+            parts = k.split(".")
+            for i, p in enumerate(parts):
+                if p == "blocks" and i + 1 < len(parts):
+                    try:
+                        block_indices.add(int(parts[i + 1]))
+                    except ValueError:
+                        continue
+    depth = len(block_indices)
+
+    # Detect num_heads from qkv weight shape: [3 * embed_dim, embed_dim]
+    # → num_heads not directly encoded, but we can look up from known configs
+    # Map (embed_dim, depth) → model constructor name
+    KNOWN_ARCHS = {
+        (768, 12): "vit_base",
+        (1024, 24): "vit_large",
+        (1280, 32): "vit_huge",
+        (1408, 40): "vit_giant_xformers",
+        (1664, 48): "vit_gigantic_xformers",
+    }
+    model_name = KNOWN_ARCHS.get((embed_dim, depth))
+
+    return model_name, embed_dim, depth
+
+
 def load_encoder(
     ckpt_path, model_name, checkpoint_key, resolution, frames_per_clip, device
 ):
@@ -215,28 +255,12 @@ def load_encoder(
     Uses the V-JEPA 2.1 VisionTransformer from app.vjepa_2_1.models which
     has norms_block (instead of a single norm layer) and modality embeddings.
     This matches the architecture used during pre-training.
+
+    If --model-name is "auto", the architecture is detected from the
+    checkpoint weight shapes.
     """
     logger.info(f"Loading encoder from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-
-    if model_name not in vit.__dict__:
-        available = list(vit.VIT_EMBED_DIMS.keys())
-        raise ValueError(
-            f"Model '{model_name}' not found. Available: {available}"
-        )
-
-    # Build model with the same kwargs used by the official eval configs
-    # (see configs/eval_2_1/vitG-384/*.yaml and
-    #  evals/video_classification_frozen/modelcustom/vit_encoder_multiclip.py)
-    model = vit.__dict__[model_name](
-        img_size=resolution,
-        num_frames=frames_per_clip,
-        patch_size=16,
-        tubelet_size=2,
-        uniform_power=True,
-        use_rope=True,
-        img_temporal_dim_size=1,
-    )
 
     # --- Resolve checkpoint key ---
     if checkpoint_key in ckpt:
@@ -263,16 +287,76 @@ def load_encoder(
         for k, v in state.items()
     }
 
-    # Handle shape mismatches (e.g. pos_embed when using RoPE)
+    # --- Auto-detect or validate model architecture ---
+    detected_name, ckpt_embed_dim, ckpt_depth = _detect_model_from_checkpoint(
+        state
+    )
+    if model_name == "auto":
+        if detected_name is None:
+            raise ValueError(
+                f"Could not auto-detect model architecture from checkpoint "
+                f"(embed_dim={ckpt_embed_dim}, depth={ckpt_depth}). "
+                f"Please specify --model-name explicitly."
+            )
+        model_name = detected_name
+        logger.info(
+            f"Auto-detected model: {model_name} "
+            f"(embed_dim={ckpt_embed_dim}, depth={ckpt_depth})"
+        )
+    else:
+        if detected_name and detected_name != model_name:
+            logger.warning(
+                f"Checkpoint has embed_dim={ckpt_embed_dim}, depth={ckpt_depth} "
+                f"→ expected '{detected_name}', but --model-name='{model_name}'. "
+                f"Overriding to '{detected_name}'."
+            )
+            model_name = detected_name
+
+    if model_name not in vit.__dict__:
+        available = list(vit.VIT_EMBED_DIMS.keys())
+        raise ValueError(
+            f"Model '{model_name}' not found. Available: {available}"
+        )
+
+    # Build model with the same kwargs used by the official eval configs
+    # (see configs/eval_2_1/vitG-384/*.yaml and
+    #  evals/video_classification_frozen/modelcustom/vit_encoder_multiclip.py)
+    model = vit.__dict__[model_name](
+        img_size=resolution,
+        num_frames=frames_per_clip,
+        patch_size=16,
+        tubelet_size=2,
+        uniform_power=True,
+        use_rope=True,
+        img_temporal_dim_size=1,
+    )
+
+    # Handle shape mismatches (only pos_embed when using RoPE is expected)
+    n_mismatched = 0
     for k, v in model.state_dict().items():
         if k not in state:
             continue
         if state[k].shape != v.shape:
-            logger.warning(f"Shape mismatch for '{k}', using model init")
+            logger.warning(
+                f"Shape mismatch for '{k}': "
+                f"ckpt={list(state[k].shape)} vs model={list(v.shape)}, "
+                f"using model init"
+            )
             state[k] = v
+            n_mismatched += 1
+    if n_mismatched > 2:
+        raise RuntimeError(
+            f"{n_mismatched} weights have shape mismatches — "
+            f"the model architecture likely does not match the checkpoint. "
+            f"Checkpoint: embed_dim={ckpt_embed_dim}, depth={ckpt_depth}."
+        )
 
     msg = model.load_state_dict(state, strict=False)
-    logger.info(f"Encoder loaded: {msg}")
+    if msg.missing_keys:
+        logger.warning(f"Missing keys: {msg.missing_keys}")
+    if msg.unexpected_keys:
+        logger.info(f"Unexpected keys (ignored): {len(msg.unexpected_keys)}")
+    logger.info("Encoder loaded successfully")
 
     model.to(device).eval()
     for p in model.parameters():
