@@ -1,0 +1,68 @@
+# V-JEPA 2.1 Inference Config — Weapon Detection (2-class)
+# ─────────────────────────────────────────────────────────
+# This config is for running inference through the existing
+# evals.main framework with a trained probe checkpoint.
+#
+# Prerequisites:
+#   1. Train a probe:
+#      python -m evals.main --fname configs/eval_2_1/vitb-384/weaponized_2cls.yaml --devices cuda:0
+#
+#   2. Copy the trained checkpoint:
+#      cp output/evals_2_1/vitb-384/weaponized_2cls/weaponized-2cls-vitb16-384/latest.pt \
+#         output/inference_2_1/vitb-384/weaponized_2cls/weaponized-2cls-vitb16-384-inference/latest.pt
+#
+#   3. Run inference:
+#      python -m evals.main --fname configs/inference_2_1/vitb-384/weaponized_2cls.yaml --devices cuda:0
+#
+# Alternatively, use the standalone script:
+#   python evaluate_vjepa2_1.py \
+#       --dataset-dir /path/to/dataset \
+#       --encoder-ckpt pretrained-models/vjepa2_1_vitb_dist_vitG_384.pt \
+#       --probe-ckpt /path/to/latest.pt
+
+eval_name: video_classification_frozen
+folder: ./output/inference_2_1/vitb-384/weaponized_2cls
+resume_checkpoint: true
+val_only: true
+tag: weaponized-2cls-vitb16-384-inference
+num_workers: 8
+
+experiment:
+  classifier:
+    num_heads: 16
+    num_probe_blocks: 4
+
+  data:
+    dataset_type: VideoDataset
+    dataset_train: data/weaponized_2cls_train.csv
+    dataset_val: data/weaponized_2cls_val.csv
+    num_classes: 2          # background (0), weaponized (1)
+    resolution: 384
+    frames_per_clip: 16
+    frame_step: 4
+    num_segments: 1
+    num_views_per_segment: 3
+
+  optimization:
+    num_epochs: 1
+    batch_size: 16
+    use_bfloat16: true
+    use_pos_embed: false
+    multihead_kwargs:
+      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.001, start_lr: 0.001, final_lr: 0.0, warmup: 0.0 }
+
+model_kwargs:
+  checkpoint: pretrained-models/vjepa2_1_vitb_dist_vitG_384.pt
+  module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
+  pretrain_kwargs:
+    encoder:
+      checkpoint_key: ema_encoder
+      img_temporal_dim_size: 1
+      model_name: vit_base
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+  wrapper_kwargs:
+    max_frames: 128
+    use_pos_embed: false

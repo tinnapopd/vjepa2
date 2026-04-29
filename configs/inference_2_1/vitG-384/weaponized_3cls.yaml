@@ -1,0 +1,50 @@
+# V-JEPA 2.1 Inference Config — Weapon Detection (3-class, ViT-g/16 @ 384)
+eval_name: video_classification_frozen
+folder: ./output/inference_2_1/vitG-384/weaponized_3cls
+resume_checkpoint: true
+val_only: true
+tag: weaponized-3cls-vitg16-384-inference
+nodes: 1
+tasks_per_node: 1
+cpus_per_task: 12
+num_workers: 8
+
+experiment:
+  classifier:
+    num_heads: 16
+    num_probe_blocks: 4
+
+  data:
+    dataset_type: VideoDataset
+    dataset_train: data/weaponized_3cls_train.csv
+    dataset_val: data/weaponized_3cls_val.csv
+    num_classes: 3          # background (0), weaponized (1), fighting (2)
+    resolution: 384
+    frames_per_clip: 16
+    frame_step: 4
+    num_segments: 1
+    num_views_per_segment: 3
+
+  optimization:
+    num_epochs: 1
+    batch_size: 4
+    use_bfloat16: true
+    use_pos_embed: false
+    multihead_kwargs:
+      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.001, start_lr: 0.001, final_lr: 0.0, warmup: 0.0 }
+
+model_kwargs:
+  checkpoint: pretrained-models/vjepa2_1_vitg_384.pt
+  module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
+  pretrain_kwargs:
+    encoder:
+      checkpoint_key: target_encoder
+      img_temporal_dim_size: 1
+      model_name: vit_giant_xformers
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+  wrapper_kwargs:
+    max_frames: 128
+    use_pos_embed: false
