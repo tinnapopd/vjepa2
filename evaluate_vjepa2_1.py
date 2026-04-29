@@ -3,9 +3,9 @@
 V-JEPA 2.1 Inference Script for Weapon Detection Evaluation
 ============================================================
 
-Loads a pretrained V-JEPA 2.1 encoder (ViT-B/16 @ 384) and a trained
-AttentiveClassifier probe, runs inference on every temporal clip in
-the evaluation dataset, and reports classification metrics.
+Loads a pretrained V-JEPA 2.1 encoder and a trained AttentiveClassifier
+probe, runs inference on every temporal clip in the evaluation dataset,
+and reports classification metrics.
 
 Usage:
     python evaluate_vjepa2_1.py \
@@ -30,7 +30,7 @@ from decord import VideoReader, cpu  # type: ignore
 
 import src.datasets.utils.video.transforms as video_transforms  # type: ignore
 import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
-import src.models.vision_transformer as vit  # type: ignore
+import app.vjepa_2_1.models.vision_transformer as vit  # type: ignore
 from src.models.attentive_pooler import AttentiveClassifier  # type: ignore
 
 logging.basicConfig(
@@ -88,13 +88,14 @@ def parse_args():
     p.add_argument(
         "--model-name",
         type=str,
-        default="vit_base",
-        help="Encoder architecture name",
+        default="vit_giant_xformers",
+        help="Encoder architecture name (e.g. vit_base, vit_large, "
+        "vit_giant_xformers, vit_gigantic_xformers)",
     )
     p.add_argument(
         "--checkpoint-key",
         type=str,
-        default="ema_encoder",
+        default="target_encoder",
         help="Key to extract encoder weights from checkpoint",
     )
     p.add_argument("--resolution", type=int, default=384)
@@ -209,16 +210,24 @@ def build_eval_transform(resolution: int):
 def load_encoder(
     ckpt_path, model_name, checkpoint_key, resolution, frames_per_clip, device
 ):
-    """Load V-JEPA 2.1 encoder and freeze."""
+    """Load V-JEPA 2.1 encoder and freeze.
+
+    Uses the V-JEPA 2.1 VisionTransformer from app.vjepa_2_1.models which
+    has norms_block (instead of a single norm layer) and modality embeddings.
+    This matches the architecture used during pre-training.
+    """
     logger.info(f"Loading encoder from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
     if model_name not in vit.__dict__:
+        available = list(vit.VIT_EMBED_DIMS.keys())
         raise ValueError(
-            f"Model {model_name} not found in src.models.vision_transformer. "
-            f"Available: {list(vit.VIT_EMBED_DIMS.keys())}"
+            f"Model '{model_name}' not found. Available: {available}"
         )
 
+    # Build model with the same kwargs used by the official eval configs
+    # (see configs/eval_2_1/vitG-384/*.yaml and
+    #  evals/video_classification_frozen/modelcustom/vit_encoder_multiclip.py)
     model = vit.__dict__[model_name](
         img_size=resolution,
         num_frames=frames_per_clip,
@@ -226,30 +235,29 @@ def load_encoder(
         tubelet_size=2,
         uniform_power=True,
         use_rope=True,
+        img_temporal_dim_size=1,
     )
 
-    # Try to find the encoder weights
+    # --- Resolve checkpoint key ---
     if checkpoint_key in ckpt:
         state = ckpt[checkpoint_key]
     else:
         logger.warning(f"Key '{checkpoint_key}' not found in checkpoint.")
-        # Fallback keys
         fallbacks = ["target_encoder", "ema_encoder", "encoder", "model"]
         state = None
         for k in fallbacks:
             if k in ckpt:
-                logger.info(f"Found weights in fallback key: '{k}'")
+                logger.info(f"Using fallback key: '{k}'")
                 state = ckpt[k]
                 break
-        
         if state is None:
-            available_keys = list(ckpt.keys())
             raise KeyError(
-                f"Could not find encoder weights in {ckpt_path}. "
-                f"Tried '{checkpoint_key}' and fallbacks {fallbacks}. "
-                f"Available keys: {available_keys}"
+                f"No encoder weights found in {ckpt_path}. "
+                f"Tried '{checkpoint_key}' and {fallbacks}. "
+                f"Available keys: {list(ckpt.keys())}"
             )
 
+    # Strip DDP / wrapper prefixes (module. from DDP, backbone. from MultiSeqWrapper)
     state = {
         k.replace("module.", "").replace("backbone.", ""): v
         for k, v in state.items()
@@ -257,7 +265,9 @@ def load_encoder(
 
     # Handle shape mismatches (e.g. pos_embed when using RoPE)
     for k, v in model.state_dict().items():
-        if k in state and state[k].shape != v.shape:
+        if k not in state:
+            continue
+        if state[k].shape != v.shape:
             logger.warning(f"Shape mismatch for '{k}', using model init")
             state[k] = v
 
