@@ -213,6 +213,12 @@ def load_encoder(
     logger.info(f"Loading encoder from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
+    if model_name not in vit.__dict__:
+        raise ValueError(
+            f"Model {model_name} not found in src.models.vision_transformer. "
+            f"Available: {list(vit.VIT_EMBED_DIMS.keys())}"
+        )
+
     model = vit.__dict__[model_name](
         img_size=resolution,
         num_frames=frames_per_clip,
@@ -222,7 +228,28 @@ def load_encoder(
         use_rope=True,
     )
 
-    state = ckpt[checkpoint_key]
+    # Try to find the encoder weights
+    if checkpoint_key in ckpt:
+        state = ckpt[checkpoint_key]
+    else:
+        logger.warning(f"Key '{checkpoint_key}' not found in checkpoint.")
+        # Fallback keys
+        fallbacks = ["target_encoder", "ema_encoder", "encoder", "model"]
+        state = None
+        for k in fallbacks:
+            if k in ckpt:
+                logger.info(f"Found weights in fallback key: '{k}'")
+                state = ckpt[k]
+                break
+        
+        if state is None:
+            available_keys = list(ckpt.keys())
+            raise KeyError(
+                f"Could not find encoder weights in {ckpt_path}. "
+                f"Tried '{checkpoint_key}' and fallbacks {fallbacks}. "
+                f"Available keys: {available_keys}"
+            )
+
     state = {
         k.replace("module.", "").replace("backbone.", ""): v
         for k, v in state.items()
