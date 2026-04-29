@@ -45,6 +45,16 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 CLASS_NAMES = {0: "non-violent", 1: "violent"}
 
+# Map (embed_dim, depth) → preferred model constructor name
+# Prefers _xformers variants as they match the official eval configs
+KNOWN_ARCHS = {
+    (768, 12): "vit_base",
+    (1024, 24): "vit_large",
+    (1280, 32): "vit_huge",
+    (1408, 40): "vit_giant_xformers",
+    (1664, 48): "vit_gigantic_xformers",
+}
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  CLI
@@ -233,14 +243,6 @@ def _detect_model_from_checkpoint(state: dict) -> tuple[str, int, int]:
                         continue
     depth = len(block_indices)
 
-    # Map (embed_dim, depth) → model constructor name
-    KNOWN_ARCHS = {
-        (768, 12): "vit_base",
-        (1024, 24): "vit_large",
-        (1280, 32): "vit_huge",
-        (1408, 40): "vit_giant_xformers",
-        (1664, 48): "vit_gigantic_xformers",
-    }
     model_name = KNOWN_ARCHS.get((embed_dim, depth))
 
     return model_name, embed_dim, depth
@@ -321,15 +323,28 @@ def load_encoder(
     if model_name == "auto":
         # If probe embed_dim is available, find the model that matches it
         if probe_embed_dim is not None:
-            # Find which model name has this embed_dim in src.models
-            for name, edim in vit_v1.VIT_EMBED_DIMS.items():
+            # Use the KNOWN_ARCHS mapping (which prefers _xformers variants)
+            # to find the model that matches both probe embed_dim and ckpt depth
+            matched = False
+            for (edim, d), name in KNOWN_ARCHS.items():
                 if edim == probe_embed_dim and name in vit_v1.__dict__:
                     model_name = name
                     logger.info(
                         f"Selected model '{model_name}' to match probe "
                         f"embed_dim={probe_embed_dim}"
                     )
+                    matched = True
                     break
+            # Fallback: search VIT_EMBED_DIMS (base names only)
+            if not matched:
+                for name, edim in vit_v1.VIT_EMBED_DIMS.items():
+                    if edim == probe_embed_dim and name in vit_v1.__dict__:
+                        model_name = name
+                        logger.info(
+                            f"Selected model '{model_name}' to match probe "
+                            f"embed_dim={probe_embed_dim}"
+                        )
+                        break
         if model_name == "auto":
             # Fall back to auto-detect from checkpoint
             if detected_name is None:
@@ -365,7 +380,7 @@ def load_encoder(
     logger.info(f"Using ViT from {vit_source}.vision_transformer")
 
     # Build model with the same kwargs used by the official eval configs
-    model = vit_module.__dict__[model_name](
+    model_kwargs = dict(
         img_size=resolution,
         num_frames=frames_per_clip,
         patch_size=16,
@@ -373,6 +388,11 @@ def load_encoder(
         uniform_power=True,
         use_rope=True,
     )
+    # The V-JEPA 2.1 VisionTransformer requires img_temporal_dim_size
+    # (set to 1 in all official eval/inference configs)
+    if vit_module is vit_v21:
+        model_kwargs["img_temporal_dim_size"] = 1
+    model = vit_module.__dict__[model_name](**model_kwargs)
 
     # Handle shape mismatches
     n_mismatched = 0
