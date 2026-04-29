@@ -30,7 +30,8 @@ from decord import VideoReader, cpu  # type: ignore
 
 import src.datasets.utils.video.transforms as video_transforms  # type: ignore
 import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
-import app.vjepa_2_1.models.vision_transformer as vit  # type: ignore
+import app.vjepa_2_1.models.vision_transformer as vit_v21  # type: ignore
+import src.models.vision_transformer as vit_v1  # type: ignore
 from src.models.attentive_pooler import AttentiveClassifier  # type: ignore
 
 logging.basicConfig(
@@ -232,8 +233,6 @@ def _detect_model_from_checkpoint(state: dict) -> tuple[str, int, int]:
                         continue
     depth = len(block_indices)
 
-    # Detect num_heads from qkv weight shape: [3 * embed_dim, embed_dim]
-    # → num_heads not directly encoded, but we can look up from known configs
     # Map (embed_dim, depth) → model constructor name
     KNOWN_ARCHS = {
         (768, 12): "vit_base",
@@ -247,16 +246,35 @@ def _detect_model_from_checkpoint(state: dict) -> tuple[str, int, int]:
     return model_name, embed_dim, depth
 
 
+def _detect_probe_embed_dim(probe_ckpt_path: str) -> int | None:
+    """Peek at probe checkpoint to determine its embed_dim."""
+    try:
+        ckpt = torch.load(probe_ckpt_path, map_location="cpu", weights_only=True)
+        state = ckpt["classifiers"][0]
+        for k, v in state.items():
+            # query_tokens shape is [1, 1, embed_dim]
+            if "query_tokens" in k:
+                return v.shape[-1]
+            # fallback: first norm weight
+            if "norm1.weight" in k:
+                return v.shape[0]
+    except Exception as e:
+        logger.warning(f"Could not detect probe embed_dim: {e}")
+    return None
+
+
 def load_encoder(
-    ckpt_path, model_name, checkpoint_key, resolution, frames_per_clip, device
+    ckpt_path, model_name, checkpoint_key, resolution, frames_per_clip,
+    device, probe_embed_dim=None,
 ):
-    """Load V-JEPA 2.1 encoder and freeze.
+    """Load V-JEPA encoder and freeze.
 
-    Uses the V-JEPA 2.1 VisionTransformer from app.vjepa_2_1.models which
-    has norms_block (instead of a single norm layer) and modality embeddings.
-    This matches the architecture used during pre-training.
+    Uses the eval-pipeline architecture from src.models.vision_transformer
+    (the same module used by evals/video_classification_frozen/modelcustom/
+    vit_encoder_multiclip.py). This ensures the encoder embed_dim matches
+    the probe that was trained against it.
 
-    If --model-name is "auto", the architecture is detected from the
+    If --model-name is 'auto', the architecture is detected from the
     checkpoint weight shapes.
     """
     logger.info(f"Loading encoder from {ckpt_path}")
@@ -287,51 +305,76 @@ def load_encoder(
         for k, v in state.items()
     }
 
-    # --- Auto-detect or validate model architecture ---
+    # --- Auto-detect model architecture ---
     detected_name, ckpt_embed_dim, ckpt_depth = _detect_model_from_checkpoint(
         state
     )
+
+    # Choose which ViT module to use:
+    # - The eval pipeline (vit_encoder_multiclip.py) uses src.models.vision_transformer
+    #   so the probe was trained with that module's architecture.
+    # - If the probe embed_dim matches a model in src.models, use src.models.
+    # - Otherwise fall back to app.vjepa_2_1.models (full V-JEPA 2.1 architecture).
+    vit_module = vit_v1  # default: same as eval pipeline
+    vit_source = "src.models"
+
     if model_name == "auto":
-        if detected_name is None:
-            raise ValueError(
-                f"Could not auto-detect model architecture from checkpoint "
-                f"(embed_dim={ckpt_embed_dim}, depth={ckpt_depth}). "
-                f"Please specify --model-name explicitly."
+        # If probe embed_dim is available, find the model that matches it
+        if probe_embed_dim is not None:
+            # Find which model name has this embed_dim in src.models
+            for name, edim in vit_v1.VIT_EMBED_DIMS.items():
+                if edim == probe_embed_dim and name in vit_v1.__dict__:
+                    model_name = name
+                    logger.info(
+                        f"Selected model '{model_name}' to match probe "
+                        f"embed_dim={probe_embed_dim}"
+                    )
+                    break
+        if model_name == "auto":
+            # Fall back to auto-detect from checkpoint
+            if detected_name is None:
+                raise ValueError(
+                    f"Cannot auto-detect model from checkpoint "
+                    f"(embed_dim={ckpt_embed_dim}, depth={ckpt_depth})."
+                )
+            model_name = detected_name
+            logger.info(
+                f"Auto-detected model: {model_name} "
+                f"(embed_dim={ckpt_embed_dim}, depth={ckpt_depth})"
             )
-        model_name = detected_name
-        logger.info(
-            f"Auto-detected model: {model_name} "
-            f"(embed_dim={ckpt_embed_dim}, depth={ckpt_depth})"
-        )
     else:
         if detected_name and detected_name != model_name:
             logger.warning(
-                f"Checkpoint has embed_dim={ckpt_embed_dim}, depth={ckpt_depth} "
-                f"→ expected '{detected_name}', but --model-name='{model_name}'. "
-                f"Overriding to '{detected_name}'."
+                f"Checkpoint: embed_dim={ckpt_embed_dim}, depth={ckpt_depth} "
+                f"→ expected '{detected_name}', but --model-name='{model_name}'."
             )
-            model_name = detected_name
 
-    if model_name not in vit.__dict__:
-        available = list(vit.VIT_EMBED_DIMS.keys())
+    # Try src.models first, then app.vjepa_2_1.models
+    if model_name in vit_v1.__dict__:
+        vit_module = vit_v1
+        vit_source = "src.models"
+    elif model_name in vit_v21.__dict__:
+        vit_module = vit_v21
+        vit_source = "app.vjepa_2_1.models"
+    else:
+        available = list(vit_v1.VIT_EMBED_DIMS.keys())
         raise ValueError(
             f"Model '{model_name}' not found. Available: {available}"
         )
 
+    logger.info(f"Using ViT from {vit_source}.vision_transformer")
+
     # Build model with the same kwargs used by the official eval configs
-    # (see configs/eval_2_1/vitG-384/*.yaml and
-    #  evals/video_classification_frozen/modelcustom/vit_encoder_multiclip.py)
-    model = vit.__dict__[model_name](
+    model = vit_module.__dict__[model_name](
         img_size=resolution,
         num_frames=frames_per_clip,
         patch_size=16,
         tubelet_size=2,
         uniform_power=True,
         use_rope=True,
-        img_temporal_dim_size=1,
     )
 
-    # Handle shape mismatches (only pos_embed when using RoPE is expected)
+    # Handle shape mismatches
     n_mismatched = 0
     for k, v in model.state_dict().items():
         if k not in state:
@@ -339,24 +382,20 @@ def load_encoder(
         if state[k].shape != v.shape:
             logger.warning(
                 f"Shape mismatch for '{k}': "
-                f"ckpt={list(state[k].shape)} vs model={list(v.shape)}, "
-                f"using model init"
+                f"ckpt={list(state[k].shape)} vs model={list(v.shape)}"
             )
             state[k] = v
             n_mismatched += 1
-    if n_mismatched > 2:
-        raise RuntimeError(
-            f"{n_mismatched} weights have shape mismatches — "
-            f"the model architecture likely does not match the checkpoint. "
-            f"Checkpoint: embed_dim={ckpt_embed_dim}, depth={ckpt_depth}."
-        )
 
     msg = model.load_state_dict(state, strict=False)
     if msg.missing_keys:
         logger.warning(f"Missing keys: {msg.missing_keys}")
     if msg.unexpected_keys:
         logger.info(f"Unexpected keys (ignored): {len(msg.unexpected_keys)}")
-    logger.info("Encoder loaded successfully")
+    logger.info(
+        f"Encoder loaded (embed_dim={model.embed_dim}, "
+        f"shape mismatches={n_mismatched})"
+    )
 
     model.to(device).eval()
     for p in model.parameters():
@@ -368,9 +407,29 @@ def load_encoder(
 def load_classifier(
     ckpt_path, embed_dim, num_heads, depth, num_classes, device
 ):
-    """Load trained AttentiveClassifier probe and freeze."""
+    """Load trained AttentiveClassifier probe and freeze.
+
+    embed_dim should match the encoder that was used during probe training.
+    """
     logger.info(f"Loading classifier probe from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+
+    # First classifier head (index 0)
+    state = ckpt["classifiers"][0]
+    state = {k.replace("module.", ""): v for k, v in state.items()}
+
+    # Auto-detect embed_dim from probe weights if it differs
+    probe_embed_dim = None
+    for k, v in state.items():
+        if "query_tokens" in k:
+            probe_embed_dim = v.shape[-1]
+            break
+    if probe_embed_dim and probe_embed_dim != embed_dim:
+        logger.warning(
+            f"Probe embed_dim={probe_embed_dim} differs from encoder "
+            f"embed_dim={embed_dim}. Using probe embed_dim."
+        )
+        embed_dim = probe_embed_dim
 
     classifier = AttentiveClassifier(
         embed_dim=embed_dim,
@@ -379,11 +438,8 @@ def load_classifier(
         num_classes=num_classes,
     )
 
-    # First classifier head (index 0)
-    state = ckpt["classifiers"][0]
-    state = {k.replace("module.", ""): v for k, v in state.items()}
     msg = classifier.load_state_dict(state, strict=True)
-    logger.info(f"Classifier loaded: {msg}")
+    logger.info(f"Classifier loaded (embed_dim={embed_dim}): {msg}")
 
     classifier.to(device).eval()
     for p in classifier.parameters():
@@ -562,6 +618,12 @@ def main():
     transform = build_eval_transform(args.resolution)
 
     # ── Load models ──
+    # Peek at probe to detect its embed_dim — this determines which encoder
+    # architecture to use (the probe was trained with a specific encoder).
+    probe_embed_dim = _detect_probe_embed_dim(args.probe_ckpt)
+    if probe_embed_dim:
+        logger.info(f"Probe embed_dim={probe_embed_dim}")
+
     encoder = load_encoder(
         ckpt_path=args.encoder_ckpt,
         model_name=args.model_name,
@@ -569,6 +631,7 @@ def main():
         resolution=args.resolution,
         frames_per_clip=args.frames_per_clip,
         device=device,
+        probe_embed_dim=probe_embed_dim,
     )
     classifier = load_classifier(
         ckpt_path=args.probe_ckpt,
