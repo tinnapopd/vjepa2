@@ -625,9 +625,14 @@ def main():
         for clip_idx, (frames_np, start_sec, end_sec) in enumerate(clips):
             # Determine ground truth for this clip
             if category == "violent":
-                gt_positive = clip_overlaps_interval(
-                    start_sec, end_sec, intervals
-                )
+                if intervals:
+                    # Use fine-grained CSV intervals
+                    gt_positive = clip_overlaps_interval(
+                        start_sec, end_sec, intervals
+                    )
+                else:
+                    # No CSV labels → entire video is violent
+                    gt_positive = True
             else:
                 gt_positive = False
 
@@ -663,7 +668,7 @@ def main():
             gt_str = "POS" if gt_positive else "NEG"
             pred_str = "POS" if pred_positive else "NEG"
             match = "✓" if gt_positive == pred_positive else "✗"
-            fight_prob = prob_dict.get("fight", 0)
+            fight_prob = prob_dict.get("weaponized", prob_dict.get("fight", 0))
             print(
                 f"  clip {clip_idx + 1:3d}/{len(clips)} "
                 f"[{start_sec:6.1f}s-{end_sec:6.1f}s] "
