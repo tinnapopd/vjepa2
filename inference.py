@@ -62,6 +62,7 @@ def load_video_clips(video_path, clip_frames=64, crop_size=384):
     """
     try:
         import decord
+
         decord.bridge.set_bridge("torch")
         vr = decord.VideoReader(str(video_path), num_threads=1)
         total_frames = len(vr)
@@ -76,7 +77,12 @@ def load_video_clips(video_path, clip_frames=64, crop_size=384):
             indices = list(range(start, end))
             # If fewer than clip_frames, uniformly resample to clip_frames
             if len(indices) < clip_frames:
-                indices = torch.linspace(start, end - 1, steps=clip_frames).round().long().tolist()
+                indices = (
+                    torch.linspace(start, end - 1, steps=clip_frames)
+                    .round()
+                    .long()
+                    .tolist()
+                )
 
             frames = vr.get_batch(indices)  # (F, H, W, C) uint8 torch
             # Convert to list of numpy arrays for transform compatibility
@@ -90,6 +96,7 @@ def load_video_clips(video_path, clip_frames=64, crop_size=384):
 
     except ImportError:
         import cv2
+
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -102,7 +109,12 @@ def load_video_clips(video_path, clip_frames=64, crop_size=384):
 
             indices = list(range(start, end))
             if len(indices) < clip_frames:
-                indices = torch.linspace(start, end - 1, steps=clip_frames).round().long().tolist()
+                indices = (
+                    torch.linspace(start, end - 1, steps=clip_frames)
+                    .round()
+                    .long()
+                    .tolist()
+                )
 
             frames_np = []
             for idx in indices:
@@ -131,15 +143,19 @@ def preprocess_clip(frames_np, crop_size=384):
     import src.datasets.utils.video.transforms as video_transforms
     import src.datasets.utils.video.volume_transforms as volume_transforms
 
-    transform = video_transforms.Compose([
-        video_transforms.Resize(int(crop_size * 256 / 224), interpolation="bilinear"),
-        video_transforms.CenterCrop(size=(crop_size, crop_size)),
-        volume_transforms.ClipToTensor(),
-        video_transforms.Normalize(
-            mean=(0.485, 0.456, 0.406),
-            std=(0.229, 0.224, 0.225),
-        ),
-    ])
+    transform = video_transforms.Compose(
+        [
+            video_transforms.Resize(
+                int(crop_size * 256 / 224), interpolation="bilinear"
+            ),
+            video_transforms.CenterCrop(size=(crop_size, crop_size)),
+            volume_transforms.ClipToTensor(),
+            video_transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            ),
+        ]
+    )
 
     clip_tensor = transform(frames_np)  # (C, F, H, W)
     return clip_tensor
@@ -208,17 +224,21 @@ def scan_dataset(dataset_root):
             if vf.suffix.lower() not in video_exts:
                 continue
 
-            label_path = label_dir / (vf.stem + ".csv") if label_dir.exists() else None
+            label_path = (
+                label_dir / (vf.stem + ".csv") if label_dir.exists() else None
+            )
             intervals = []
             if category == "violent" and label_path and label_path.exists():
                 intervals = load_violent_intervals(str(label_path))
 
-            samples.append({
-                "video_path": str(vf),
-                "label_path": str(label_path) if label_path else None,
-                "category": category,
-                "intervals": intervals,
-            })
+            samples.append(
+                {
+                    "video_path": str(vf),
+                    "label_path": str(label_path) if label_path else None,
+                    "category": category,
+                    "intervals": intervals,
+                }
+            )
 
     return samples
 
@@ -233,7 +253,9 @@ def load_encoder(variant_cfg, device, resolution=384, frames_per_clip=16):
     checkpoint_key = variant_cfg["checkpoint_key"]
 
     print(f"Loading encoder checkpoint: {encoder_path}")
-    checkpoint = torch.load(encoder_path, map_location="cpu", weights_only=True)
+    checkpoint = torch.load(
+        encoder_path, map_location="cpu", weights_only=True
+    )
 
     # Build encoder
     encoder = vit.__dict__[model_name](
@@ -247,14 +269,18 @@ def load_encoder(variant_cfg, device, resolution=384, frames_per_clip=16):
 
     # Load weights
     pretrained_dict = checkpoint[checkpoint_key]
-    pretrained_dict = {k.replace("module.", "").replace("backbone.", ""): v
-                       for k, v in pretrained_dict.items()}
+    pretrained_dict = {
+        k.replace("module.", "").replace("backbone.", ""): v
+        for k, v in pretrained_dict.items()
+    }
 
     for k, v in encoder.state_dict().items():
         if k not in pretrained_dict:
             print(f"  WARNING: key '{k}' not in checkpoint")
         elif pretrained_dict[k].shape != v.shape:
-            print(f"  WARNING: shape mismatch for '{k}': {pretrained_dict[k].shape} vs {v.shape}")
+            print(
+                f"  WARNING: shape mismatch for '{k}': {pretrained_dict[k].shape} vs {v.shape}"
+            )
             pretrained_dict[k] = v
 
     msg = encoder.load_state_dict(pretrained_dict, strict=False)
@@ -305,13 +331,17 @@ def load_classifier(variant_cfg, device, num_classes=2, num_probe_blocks=4):
 def auto_detect_variant():
     """Auto-detect which variant is available based on file existence."""
     for name, cfg in VARIANT_CONFIGS.items():
-        if os.path.exists(cfg["encoder_path"]) and os.path.exists(cfg["probe_path"]):
+        if os.path.exists(cfg["encoder_path"]) and os.path.exists(
+            cfg["probe_path"]
+        ):
             print(f"Auto-detected variant: {name}")
             return name
     raise FileNotFoundError(
         "No matching encoder+probe pair found. Available configs:\n"
-        + "\n".join(f"  {k}: encoder={v['encoder_path']}, probe={v['probe_path']}"
-                    for k, v in VARIANT_CONFIGS.items())
+        + "\n".join(
+            f"  {k}: encoder={v['encoder_path']}, probe={v['probe_path']}"
+            for k, v in VARIANT_CONFIGS.items()
+        )
     )
 
 
@@ -330,9 +360,11 @@ def predict_clip(encoder, classifier, clip_tensor, device, use_bfloat16=True):
     # Add batch dim: (1, C, F, H, W)
     x = clip_tensor.unsqueeze(0).to(device)
 
-    with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_bfloat16 and device.type == "cuda"):
-        features = encoder(x)           # (1, num_tokens, embed_dim)
-        logits = classifier(features)   # (1, num_classes)
+    with torch.cuda.amp.autocast(
+        dtype=torch.float16, enabled=use_bfloat16 and device.type == "cuda"
+    ):
+        features = encoder(x)  # (1, num_tokens, embed_dim)
+        logits = classifier(features)  # (1, num_classes)
 
     probs = F.softmax(logits, dim=-1)[0].cpu().float()
     pred_idx = probs.argmax().item()
@@ -364,18 +396,29 @@ def compute_metrics(tp, tn, fp, fn):
     }
 
 
-def print_video_stats(video_idx, total_videos, video_name, category,
-                      video_tp, video_tn, video_fp, video_fn,
-                      num_clips, elapsed):
+def print_video_stats(
+    video_idx,
+    total_videos,
+    video_name,
+    category,
+    video_tp,
+    video_tn,
+    video_fp,
+    video_fn,
+    num_clips,
+    elapsed,
+):
     """Print per-video statistics after all clips are processed."""
     m = compute_metrics(video_tp, video_tn, video_fp, video_fn)
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"[{video_idx + 1:3d}/{total_videos}] {category}/{video_name}")
     print(f"  Clips: {num_clips}  |  Time: {elapsed:.1f}s")
     print(f"  TP: {video_tp}  TN: {video_tn}  FP: {video_fp}  FN: {video_fn}")
-    print(f"  Acc: {m['accuracy']:.4f}  Prec: {m['precision']:.4f}  "
-          f"Rec: {m['recall']:.4f}  F1: {m['f1']:.4f}")
-    print(f"{'='*80}")
+    print(
+        f"  Acc: {m['accuracy']:.4f}  Prec: {m['precision']:.4f}  "
+        f"Rec: {m['recall']:.4f}  F1: {m['f1']:.4f}"
+    )
+    print(f"{'=' * 80}")
 
 
 # ---------------------------------------------------------------------------
@@ -402,8 +445,12 @@ def save_summary(all_results, global_metrics, output_path, args_info):
         f.write(f"F1:          {global_metrics['f1']:.4f}\n\n")
 
         f.write("Confusion Matrix:\n")
-        f.write(f"  TP: {global_metrics['tp']:5d}    FP: {global_metrics['fp']:5d}\n")
-        f.write(f"  FN: {global_metrics['fn']:5d}    TN: {global_metrics['tn']:5d}\n\n")
+        f.write(
+            f"  TP: {global_metrics['tp']:5d}    FP: {global_metrics['fp']:5d}\n"
+        )
+        f.write(
+            f"  FN: {global_metrics['fn']:5d}    TN: {global_metrics['tn']:5d}\n\n"
+        )
 
         f.write("-" * 80 + "\n")
         f.write("Per-Video Details\n")
@@ -417,9 +464,11 @@ def save_summary(all_results, global_metrics, output_path, args_info):
             name = Path(r["video_path"]).name
             if len(name) > 48:
                 name = name[:45] + "..."
-            f.write(f"{name:<50} {r['category']:<12} {r['num_clips']:>5} "
-                    f"{r['tp']:>4} {r['tn']:>4} {r['fp']:>4} {r['fn']:>4} "
-                    f"{m['accuracy']:>6.3f} {m['f1']:>6.3f}\n")
+            f.write(
+                f"{name:<50} {r['category']:<12} {r['num_clips']:>5} "
+                f"{r['tp']:>4} {r['tn']:>4} {r['fp']:>4} {r['fn']:>4} "
+                f"{m['accuracy']:>6.3f} {m['f1']:>6.3f}\n"
+            )
 
         f.write("-" * 80 + "\n")
 
@@ -441,24 +490,57 @@ def save_summary(all_results, global_metrics, output_path, args_info):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="V-JEPA 2.1 Clip-Level Evaluation")
-    parser.add_argument("--variant", type=str, default=None,
-                        choices=list(VARIANT_CONFIGS.keys()),
-                        help="Model variant (auto-detected if not specified)")
-    parser.add_argument("--dataset", type=str, required=True,
-                        help="Path to dataset root (with violent/ and non-violent/ subdirs)")
-    parser.add_argument("--device", type=str, default=None,
-                        help="Device (auto: cuda if available, else cpu)")
-    parser.add_argument("--clip-frames", type=int, default=16,
-                        help="Number of frames per clip (default: 16)")
-    parser.add_argument("--resolution", type=int, default=384,
-                        help="Input resolution (default: 384)")
-    parser.add_argument("--output", type=str, default="evaluation_results.txt",
-                        help="Output file path")
-    parser.add_argument("--num-probe-blocks", type=int, default=4,
-                        help="Number of probe self-attention blocks (default: 4)")
-    parser.add_argument("--no-bf16", action="store_true",
-                        help="Disable bfloat16 mixed precision")
+    parser = argparse.ArgumentParser(
+        description="V-JEPA 2.1 Clip-Level Evaluation"
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        choices=list(VARIANT_CONFIGS.keys()),
+        help="Model variant (auto-detected if not specified)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="Path to dataset root (with violent/ and non-violent/ subdirs)",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device (auto: cuda if available, else cpu)",
+    )
+    parser.add_argument(
+        "--clip-frames",
+        type=int,
+        default=16,
+        help="Number of frames per clip (default: 16)",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=384,
+        help="Input resolution (default: 384)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="evaluation_results.txt",
+        help="Output file path",
+    )
+    parser.add_argument(
+        "--num-probe-blocks",
+        type=int,
+        default=4,
+        help="Number of probe self-attention blocks (default: 4)",
+    )
+    parser.add_argument(
+        "--no-bf16",
+        action="store_true",
+        help="Disable bfloat16 mixed precision",
+    )
     args = parser.parse_args()
 
     # Device
@@ -477,12 +559,18 @@ def main():
 
     # Load models
     print("\n--- Loading Models ---")
-    encoder = load_encoder(variant_cfg, device,
-                           resolution=args.resolution,
-                           frames_per_clip=args.clip_frames)
-    classifier = load_classifier(variant_cfg, device,
-                                 num_classes=len(LABELS),
-                                 num_probe_blocks=args.num_probe_blocks)
+    encoder = load_encoder(
+        variant_cfg,
+        device,
+        resolution=args.resolution,
+        frames_per_clip=args.clip_frames,
+    )
+    classifier = load_classifier(
+        variant_cfg,
+        device,
+        num_classes=len(LABELS),
+        num_probe_blocks=args.num_probe_blocks,
+    )
     print("Models loaded successfully.\n")
 
     # Scan dataset
@@ -490,7 +578,9 @@ def main():
     samples = scan_dataset(args.dataset)
     n_violent = sum(1 for s in samples if s["category"] == "violent")
     n_nonviolent = sum(1 for s in samples if s["category"] == "non-violent")
-    print(f"Found {len(samples)} videos: {n_violent} violent, {n_nonviolent} non-violent\n")
+    print(
+        f"Found {len(samples)} videos: {n_violent} violent, {n_nonviolent} non-violent\n"
+    )
 
     if not samples:
         print("ERROR: No videos found in dataset.")
@@ -514,16 +604,24 @@ def main():
 
         try:
             clips, fps, total_frames = load_video_clips(
-                video_path, clip_frames=args.clip_frames, crop_size=args.resolution
+                video_path,
+                clip_frames=args.clip_frames,
+                crop_size=args.resolution,
             )
         except Exception as e:
             print(f"\n  ERROR loading {video_name}: {e}")
-            all_results.append({
-                "video_path": video_path,
-                "category": category,
-                "num_clips": 0, "tp": 0, "tn": 0, "fp": 0, "fn": 0,
-                "error": str(e),
-            })
+            all_results.append(
+                {
+                    "video_path": video_path,
+                    "category": category,
+                    "num_clips": 0,
+                    "tp": 0,
+                    "tn": 0,
+                    "fp": 0,
+                    "fn": 0,
+                    "error": str(e),
+                }
+            )
             continue
 
         video_tp, video_tn, video_fp, video_fn = 0, 0, 0, 0
@@ -531,21 +629,29 @@ def main():
         for clip_idx, (frames_np, start_sec, end_sec) in enumerate(clips):
             # Determine ground truth for this clip
             if category == "violent":
-                gt_positive = clip_overlaps_interval(start_sec, end_sec, intervals)
+                gt_positive = clip_overlaps_interval(
+                    start_sec, end_sec, intervals
+                )
             else:
                 gt_positive = False
 
             # Preprocess and predict
             try:
-                clip_tensor = preprocess_clip(frames_np, crop_size=args.resolution)
+                clip_tensor = preprocess_clip(
+                    frames_np, crop_size=args.resolution
+                )
                 pred_idx, prob_dict = predict_clip(
-                    encoder, classifier, clip_tensor, device, use_bfloat16=use_bf16
+                    encoder,
+                    classifier,
+                    clip_tensor,
+                    device,
+                    use_bfloat16=use_bf16,
                 )
             except Exception as e:
                 print(f"  ERROR on clip {clip_idx} of {video_name}: {e}")
                 continue
 
-            pred_positive = (pred_idx == 1)  # class 1 = fight/violent
+            pred_positive = pred_idx == 1  # class 1 = fight/violent
 
             # Update confusion matrix
             if gt_positive and pred_positive:
@@ -562,10 +668,13 @@ def main():
             pred_str = "POS" if pred_positive else "NEG"
             match = "✓" if gt_positive == pred_positive else "✗"
             fight_prob = prob_dict.get("fight", 0)
-            print(f"  clip {clip_idx + 1:3d}/{len(clips)} "
-                  f"[{start_sec:6.1f}s-{end_sec:6.1f}s] "
-                  f"GT:{gt_str} Pred:{pred_str} "
-                  f"fight={fight_prob:.3f} {match}", end="\r")
+            print(
+                f"  clip {clip_idx + 1:3d}/{len(clips)} "
+                f"[{start_sec:6.1f}s-{end_sec:6.1f}s] "
+                f"GT:{gt_str} Pred:{pred_str} "
+                f"fight={fight_prob:.3f} {match}",
+                end="\r",
+            )
 
         elapsed = time.time() - vid_start
 
@@ -576,30 +685,45 @@ def main():
         global_fn += video_fn
 
         # Print per-video summary
-        print_video_stats(vid_idx, len(samples), video_name, category,
-                          video_tp, video_tn, video_fp, video_fn,
-                          len(clips), elapsed)
+        print_video_stats(
+            vid_idx,
+            len(samples),
+            video_name,
+            category,
+            video_tp,
+            video_tn,
+            video_fp,
+            video_fn,
+            len(clips),
+            elapsed,
+        )
 
         # Running global metrics
         gm = compute_metrics(global_tp, global_tn, global_fp, global_fn)
-        print(f"  Running Global → Acc: {gm['accuracy']:.4f}  "
-              f"Prec: {gm['precision']:.4f}  Rec: {gm['recall']:.4f}  "
-              f"F1: {gm['f1']:.4f}  "
-              f"(TP:{global_tp} TN:{global_tn} FP:{global_fp} FN:{global_fn})")
+        print(
+            f"  Running Global → Acc: {gm['accuracy']:.4f}  "
+            f"Prec: {gm['precision']:.4f}  Rec: {gm['recall']:.4f}  "
+            f"F1: {gm['f1']:.4f}  "
+            f"(TP:{global_tp} TN:{global_tn} FP:{global_fp} FN:{global_fn})"
+        )
 
-        all_results.append({
-            "video_path": video_path,
-            "category": category,
-            "num_clips": len(clips),
-            "tp": video_tp,
-            "tn": video_tn,
-            "fp": video_fp,
-            "fn": video_fn,
-        })
+        all_results.append(
+            {
+                "video_path": video_path,
+                "category": category,
+                "num_clips": len(clips),
+                "tp": video_tp,
+                "tn": video_tn,
+                "fp": video_fp,
+                "fn": video_fn,
+            }
+        )
 
     # Final summary
     total_elapsed = time.time() - total_start
-    global_metrics = compute_metrics(global_tp, global_tn, global_fp, global_fn)
+    global_metrics = compute_metrics(
+        global_tp, global_tn, global_fp, global_fn
+    )
 
     print(f"\n{'#' * 80}")
     print(f"FINAL RESULTS")
@@ -610,7 +734,9 @@ def main():
     print(f"Precision: {global_metrics['precision']:.4f}")
     print(f"Recall:    {global_metrics['recall']:.4f}")
     print(f"F1:        {global_metrics['f1']:.4f}")
-    print(f"TP: {global_tp}  TN: {global_tn}  FP: {global_fp}  FN: {global_fn}")
+    print(
+        f"TP: {global_tp}  TN: {global_tn}  FP: {global_fp}  FN: {global_fn}"
+    )
     print(f"{'#' * 80}")
 
     # Save
