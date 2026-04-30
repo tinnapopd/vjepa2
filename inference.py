@@ -52,7 +52,7 @@ LABELS = ["background", "weaponized"]
 # ---------------------------------------------------------------------------
 # Video loading
 # ---------------------------------------------------------------------------
-def load_video_clips(video_path, clip_frames=64):
+def load_video_clips(video_path, clip_frames=16, frame_step=4):
     """Load video and split into non-overlapping clips of `clip_frames` frames.
 
     Returns list of (clip_tensor, start_sec, end_sec).
@@ -67,20 +67,19 @@ def load_video_clips(video_path, clip_frames=64):
         fps = vr.get_avg_fps()
 
         clips = []
-        for start in range(0, total_frames, clip_frames):
-            end = min(start + clip_frames, total_frames)
-            if end - start < clip_frames // 2:
+        total_span = clip_frames * frame_step
+        
+        for start in range(0, total_frames, total_span):
+            end = min(start + total_span, total_frames)
+            if end - start < total_span // 2:
                 break  # skip if too short
 
-            indices = list(range(start, end))
-            # If fewer than clip_frames, uniformly resample to clip_frames
-            if len(indices) < clip_frames:
-                indices = (
-                    torch.linspace(start, end - 1, steps=clip_frames)
-                    .round()
-                    .long()
-                    .tolist()
-                )
+            indices = list(range(start, end, frame_step))
+            
+            while len(indices) < clip_frames:
+                indices.append(indices[-1])
+            if len(indices) > clip_frames:
+                indices = indices[:clip_frames]
 
             frames = vr.get_batch(indices)  # (F, H, W, C) uint8 torch
             # Convert to list of numpy arrays for transform compatibility
@@ -100,19 +99,19 @@ def load_video_clips(video_path, clip_frames=64):
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
         clips = []
-        for start in range(0, total_frames, clip_frames):
-            end = min(start + clip_frames, total_frames)
-            if end - start < clip_frames // 2:
+        total_span = clip_frames * frame_step
+        
+        for start in range(0, total_frames, total_span):
+            end = min(start + total_span, total_frames)
+            if end - start < total_span // 2:
                 break
 
-            indices = list(range(start, end))
-            if len(indices) < clip_frames:
-                indices = (
-                    torch.linspace(start, end - 1, steps=clip_frames)
-                    .round()
-                    .long()
-                    .tolist()
-                )
+            indices = list(range(start, end, frame_step))
+            
+            while len(indices) < clip_frames:
+                indices.append(indices[-1])
+            if len(indices) > clip_frames:
+                indices = indices[:clip_frames]
 
             frames_np = []
             for idx in indices:
@@ -122,7 +121,10 @@ def load_video_clips(video_path, clip_frames=64):
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     frames_np.append(frame)
                 else:
-                    frames_np.append(np.zeros((1, 1, 3), dtype=np.uint8))
+                    if frames_np:
+                        frames_np.append(frames_np[-1])
+                    else:
+                        frames_np.append(np.zeros((1, 1, 3), dtype=np.uint8))
 
             start_sec = start / fps
             end_sec = end / fps
@@ -539,6 +541,12 @@ def main():
         help="Number of frames per clip (default: 16)",
     )
     parser.add_argument(
+        "--frame-step",
+        type=int,
+        default=4,
+        help="Temporal stride between frames (default: 4)",
+    )
+    parser.add_argument(
         "--resolution",
         type=int,
         default=384,
@@ -631,6 +639,7 @@ def main():
             clips, fps, total_frames = load_video_clips(
                 video_path,
                 clip_frames=args.clip_frames,
+                frame_step=args.frame_step,
             )
         except Exception as e:
             print(f"\n  ERROR loading {video_name}: {e}")
