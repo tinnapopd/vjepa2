@@ -15,16 +15,14 @@ import os
 import sys
 import time
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-import src.models.vision_transformer as vit
-from src.models.attentive_pooler import AttentiveClassifier
+import src.models.vision_transformer as vit  # type: ignore
+from src.models.attentive_pooler import AttentiveClassifier  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Variant configs
@@ -48,20 +46,20 @@ VARIANT_CONFIGS = {
     },
 }
 
-LABELS = ["nonfight", "fight"]  # class 0 = non-violent, class 1 = violent
+LABELS = ["background", "weaponized"]
 
 
 # ---------------------------------------------------------------------------
 # Video loading
 # ---------------------------------------------------------------------------
-def load_video_clips(video_path, clip_frames=64, crop_size=384):
+def load_video_clips(video_path, clip_frames=64):
     """Load video and split into non-overlapping clips of `clip_frames` frames.
 
     Returns list of (clip_tensor, start_sec, end_sec).
     clip_tensor shape: (C, F, H, W) float32 normalized.
     """
     try:
-        import decord
+        import decord  # type: ignore
 
         decord.bridge.set_bridge("torch")
         vr = decord.VideoReader(str(video_path), num_threads=1)
@@ -139,9 +137,8 @@ def preprocess_clip(frames_np, crop_size=384):
 
     Uses the same resize/crop/normalize as evals/ VideoTransform (eval mode).
     """
-    import torchvision.transforms as transforms
-    import src.datasets.utils.video.transforms as video_transforms
-    import src.datasets.utils.video.volume_transforms as volume_transforms
+    import src.datasets.utils.video.transforms as video_transforms  # type: ignore
+    import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
 
     transform = video_transforms.Compose(
         [
@@ -598,7 +595,7 @@ def main():
         video_path = sample["video_path"]
         category = sample["category"]
         intervals = sample["intervals"]
-        video_name = Path(video_path).name
+        video_name = Path(str(video_path)).name
 
         vid_start = time.time()
 
@@ -606,7 +603,6 @@ def main():
             clips, fps, total_frames = load_video_clips(
                 video_path,
                 clip_frames=args.clip_frames,
-                crop_size=args.resolution,
             )
         except Exception as e:
             print(f"\n  ERROR loading {video_name}: {e}")
@@ -726,7 +722,7 @@ def main():
     )
 
     print(f"\n{'#' * 80}")
-    print(f"FINAL RESULTS")
+    print("FINAL RESULTS")
     print(f"{'#' * 80}")
     print(f"Total clips evaluated: {global_metrics['total']}")
     print(f"Total time: {total_elapsed:.1f}s")
