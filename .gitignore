@@ -37,6 +37,8 @@ configs/local
 # Models
 pretrained-models/*
 !pretrained-models/.gitkeep
+trained-probes/*
+!trained-probes/.gitkeep
 
 # Dataset
 data/*
