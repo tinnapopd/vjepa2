@@ -1,6 +1,7 @@
 import argparse
 import os
 import csv
+import warnings
 from typing import List, Tuple, Dict, Any
 
 import torch
@@ -10,6 +11,8 @@ from tqdm import tqdm
 
 import src.datasets.utils.video.transforms as video_transforms  # type: ignore
 import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 class EvalDataset:
@@ -218,19 +221,21 @@ if __name__ == "__main__":
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     weight_name = args.encoder_weights.lower()
     if "_vitg_" in weight_name:
-        from src.models.vision_transformer import vit_giant_xformers as vit_model  # type: ignore
+        from src.models.vision_transformer import (  # type: ignore
+            vit_gigantic_xformers as vit_model,
+        )
     elif "_vitl_" in weight_name:
         from src.models.vision_transformer import vit_large as vit_model  # type: ignore
     else:
         from src.models.vision_transformer import vit_base as vit_model  # type: ignore
 
     encoder = vit_model(
-        img_size=(args.img_size, args.img_size), 
+        img_size=(args.img_size, args.img_size),
         num_frames=args.num_frames,
         patch_size=16,
         tubelet_size=2,
         uniform_power=True,
-        use_rope=True
+        use_rope=True,
     )
     pretrained_dict = torch.load(
         args.encoder_weights, map_location="cpu", weights_only=True
