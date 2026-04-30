@@ -373,9 +373,13 @@ if __name__ == "__main__":
                 vid_fn += 1
 
         video_end_time = time.time()
-        total_frames_processed = (vid_tp + vid_fp + vid_tn + vid_fn) * args.num_frames
+        total_frames_processed = (
+            vid_tp + vid_fp + vid_tn + vid_fn
+        ) * args.num_frames
         elapsed_time = video_end_time - video_start_time
-        inf_fps = total_frames_processed / elapsed_time if elapsed_time > 0 else 0.0
+        inf_fps = (
+            total_frames_processed / elapsed_time if elapsed_time > 0 else 0.0
+        )
 
         print(
             f"  -> Video Results: TP={vid_tp}, FP={vid_fp}, "
