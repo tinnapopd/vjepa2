@@ -305,12 +305,11 @@ if __name__ == "__main__":
             fps = vr.get_avg_fps()
             if not fps or fps == 0:
                 fps = 30.0
-            vframes = vr.get_batch(range(len(vr))).permute(0, 3, 1, 2)
+            total_frames = len(vr)
         except Exception as e:
             print(f"Error reading {v_path}: {e}")
             continue
 
-        total_frames = len(vframes)
         labels = dataset.load_labels(l_path)
 
         for start_idx in range(0, total_frames, args.num_frames):
@@ -318,7 +317,15 @@ if __name__ == "__main__":
             if end_idx > total_frames:
                 break
 
-            clip_frames = vframes[start_idx:end_idx]
+            try:
+                clip_frames = vr.get_batch(range(start_idx, end_idx)).permute(
+                    0, 3, 1, 2
+                )
+            except Exception as e:
+                print(
+                    f"Error reading frames {start_idx}-{end_idx} in {v_path}: {e}"
+                )
+                continue
             clip_start_sec = start_idx / fps
             clip_end_sec = end_idx / fps
 
