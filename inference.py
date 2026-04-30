@@ -1,6 +1,7 @@
 import argparse
 import os
 import csv
+import time
 import warnings
 from typing import List, Tuple, Dict, Any
 
@@ -302,6 +303,7 @@ if __name__ == "__main__":
         print(
             f"[{video_idx + 1}/{len(videos_path)}] Evaluating: {os.path.basename(v_path)}"
         )
+        vid_tp, vid_fp, vid_tn, vid_fn = 0, 0, 0, 0
         try:
             vr = decord.VideoReader(v_path, ctx=decord.cpu(0))
             fps = vr.get_avg_fps()
@@ -314,6 +316,7 @@ if __name__ == "__main__":
 
         labels = dataset.load_labels(l_path)
 
+        video_start_time = time.time()
         for start_idx in range(0, total_frames, args.num_frames):
             end_idx = start_idx + args.num_frames
             if end_idx > total_frames:
@@ -349,21 +352,35 @@ if __name__ == "__main__":
                 and true_label == violent_class_index
             ):
                 tp += 1
+                vid_tp += 1
             elif (
                 pred_label == violent_class_index
                 and true_label != violent_class_index
             ):
                 fp += 1
+                vid_fp += 1
             elif (
                 pred_label != violent_class_index
                 and true_label != violent_class_index
             ):
                 tn += 1
+                vid_tn += 1
             elif (
                 pred_label != violent_class_index
                 and true_label == violent_class_index
             ):
                 fn += 1
+                vid_fn += 1
+
+        video_end_time = time.time()
+        total_frames_processed = (vid_tp + vid_fp + vid_tn + vid_fn) * args.num_frames
+        elapsed_time = video_end_time - video_start_time
+        inf_fps = total_frames_processed / elapsed_time if elapsed_time > 0 else 0.0
+
+        print(
+            f"  -> Video Results: TP={vid_tp}, FP={vid_fp}, "
+            + f"TN={vid_tn}, FN={vid_fn} | Inference FPS: {inf_fps:.2f}"
+        )
 
     print("\nEvaluation Results:")
     metrics = compute_metrics(tp, fp, tn, fn)
