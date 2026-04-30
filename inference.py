@@ -4,9 +4,9 @@ import csv
 import warnings
 from typing import List, Tuple, Dict, Any
 
+import decord  # type: ignore
 import torch
 import torch.nn.functional as F
-import torchvision
 from tqdm import tqdm
 
 import src.datasets.utils.video.transforms as video_transforms  # type: ignore
@@ -220,7 +220,11 @@ if __name__ == "__main__":
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     weight_basename = os.path.basename(args.encoder_weights).lower()
-    arch_part = weight_basename.split("_")[2] if len(weight_basename.split("_")) > 2 else ""
+    arch_part = (
+        weight_basename.split("_")[2]
+        if len(weight_basename.split("_")) > 2
+        else ""
+    )
 
     if "vitg" in arch_part:
         from src.models.vision_transformer import (  # type: ignore
@@ -296,16 +300,15 @@ if __name__ == "__main__":
         zip(videos_path, video_classes, labels_path), total=len(videos_path)
     ):
         try:
-            vframes, _, info = torchvision.io.read_video(  # type: ignore
-                v_path, pts_unit="sec", output_format="TCHW"
-            )
+            decord.bridge.set_bridge("torch")
+            vr = decord.VideoReader(v_path, ctx=decord.cpu(0))
+            fps = vr.get_avg_fps()
+            if not fps or fps == 0:
+                fps = 30.0
+            vframes = vr.get_batch(range(len(vr))).permute(0, 3, 1, 2)
         except Exception as e:
             print(f"Error reading {v_path}: {e}")
             continue
-
-        fps = info.get("video_fps")
-        if not fps or fps == 0:
-            fps = 30.0
 
         total_frames = len(vframes)
         labels = dataset.load_labels(l_path)
