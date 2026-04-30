@@ -200,13 +200,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--encoder_weights",
         type=str,
-        default="pretrained-models/vjepa2_1_vitG_384.pt",
+        default="pretrained-models/vjepa2_1_vitl_dist_vitG_384.pt",
         help="Path to V-JEPA encoder weights",
     )
     parser.add_argument(
         "--probe_weights",
         type=str,
-        default="trained-probes/vitg-probe.pt",
+        default="trained-probes/vitl-probe.pt",
         help="Path to attentive probe weights",
     )
     parser.add_argument(
