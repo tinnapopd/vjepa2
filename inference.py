@@ -7,7 +7,6 @@ from typing import List, Tuple, Dict, Any
 import decord  # type: ignore
 import torch
 import torch.nn.functional as F
-from tqdm import tqdm
 
 import src.datasets.utils.video.transforms as video_transforms  # type: ignore
 import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
@@ -296,11 +295,14 @@ if __name__ == "__main__":
 
     print(f"Found {len(videos_path)} videos to evaluate.")
     print("Starting Batch Evaluation...")
-    for v_path, v_class, l_path in tqdm(
-        zip(videos_path, video_classes, labels_path), total=len(videos_path)
+    decord.bridge.set_bridge("torch")
+    for video_idx, (v_path, v_class, l_path) in enumerate(
+        zip(videos_path, video_classes, labels_path)
     ):
+        print(
+            f"[{video_idx + 1}/{len(videos_path)}] Evaluating: {os.path.basename(v_path)}"
+        )
         try:
-            decord.bridge.set_bridge("torch")
             vr = decord.VideoReader(v_path, ctx=decord.cpu(0))
             fps = vr.get_avg_fps()
             if not fps or fps == 0:
@@ -318,9 +320,8 @@ if __name__ == "__main__":
                 break
 
             try:
-                clip_frames = vr.get_batch(range(start_idx, end_idx)).permute(
-                    0, 3, 1, 2
-                )
+                indices = list(range(start_idx, end_idx))
+                clip_frames = vr.get_batch(indices).permute(0, 3, 1, 2)
             except Exception as e:
                 print(
                     f"Error reading frames {start_idx}-{end_idx} in {v_path}: {e}"
