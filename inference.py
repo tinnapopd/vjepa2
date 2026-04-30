@@ -219,12 +219,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    weight_name = args.encoder_weights.lower()
-    if "_vitg_" in weight_name:
+    weight_basename = os.path.basename(args.encoder_weights).lower()
+    arch_part = weight_basename.split("_")[2] if len(weight_basename.split("_")) > 2 else ""
+
+    if "vitg" in arch_part:
         from src.models.vision_transformer import (  # type: ignore
             vit_gigantic_xformers as vit_model,
         )
-    elif "_vitl_" in weight_name:
+    elif "vitl" in arch_part:
         from src.models.vision_transformer import vit_large as vit_model  # type: ignore
     else:
         from src.models.vision_transformer import vit_base as vit_model  # type: ignore
