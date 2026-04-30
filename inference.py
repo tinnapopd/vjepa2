@@ -346,11 +346,14 @@ def auto_detect_variant():
 # Inference
 # ---------------------------------------------------------------------------
 @torch.no_grad()
-def predict_clip(encoder, classifier, clip_tensor, device, use_bfloat16=True):
+def predict_clip(
+    encoder, classifier, clip_tensor, device, use_bfloat16=True, debug=False
+):
     """Run inference on a single clip.
 
     Args:
         clip_tensor: (C, F, H, W) preprocessed tensor
+        debug: if True, print diagnostic info
     Returns:
         (predicted_label_idx, probability_dict)
     """
@@ -363,9 +366,29 @@ def predict_clip(encoder, classifier, clip_tensor, device, use_bfloat16=True):
         features = encoder(x)  # (1, num_tokens, embed_dim)
         logits = classifier(features)  # (1, num_classes)
 
+    if debug:
+        feat_f = features.cpu().float()
+        logits_f = logits.cpu().float()
+        print(
+            f"\n    [DEBUG] input shape: {x.shape}  dtype: {x.dtype}"
+        )
+        print(
+            f"    [DEBUG] features shape: {features.shape}  "
+            f"mean: {feat_f.mean():.6f}  std: {feat_f.std():.6f}  "
+            f"min: {feat_f.min():.6f}  max: {feat_f.max():.6f}"
+        )
+        print(
+            f"    [DEBUG] raw logits: {logits_f[0].tolist()}"
+        )
+
     probs = F.softmax(logits, dim=-1)[0].cpu().float()
     pred_idx = probs.argmax().item()
     prob_dict = {LABELS[i]: probs[i].item() for i in range(len(LABELS))}
+
+    if debug:
+        print(
+            f"    [DEBUG] probs: {[f'{LABELS[i]}={probs[i]:.6f}' for i in range(len(LABELS))]}"
+        )
 
     return pred_idx, prob_dict
 
@@ -538,6 +561,11 @@ def main():
         action="store_true",
         help="Disable bfloat16 mixed precision",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print diagnostic info for first few clips",
+    )
     args = parser.parse_args()
 
     # Device
@@ -647,6 +675,7 @@ def main():
                     clip_tensor,
                     device,
                     use_bfloat16=use_bf16,
+                    debug=args.debug and vid_idx == 0 and clip_idx < 3,
                 )
             except Exception as e:
                 print(f"  ERROR on clip {clip_idx} of {video_name}: {e}")
