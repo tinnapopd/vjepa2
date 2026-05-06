@@ -269,8 +269,9 @@ def main(args_eval, resume_preempt=False):
         if val_only:
             train_acc = -1.0
             train_loss = 0.0
+            train_class_accs = {}
         else:
-            train_acc, train_loss, train_global_step = run_one_epoch(
+            train_acc, train_loss, train_global_step, train_class_accs = run_one_epoch(
                 device=device,
                 training=True,
                 encoder=encoder,
@@ -281,12 +282,13 @@ def main(args_eval, resume_preempt=False):
                 wd_scheduler=wd_scheduler,
                 data_loader=train_loader,
                 use_bfloat16=use_bfloat16,
+                num_classes=num_classes,
                 clearml_logger=clearml_logger,
                 global_step=train_global_step,
                 phase="Train",
             )
 
-        val_acc, val_loss, val_global_step = run_one_epoch(
+        val_acc, val_loss, val_global_step, val_class_accs = run_one_epoch(
             device=device,
             training=False,
             encoder=encoder,
@@ -297,14 +299,30 @@ def main(args_eval, resume_preempt=False):
             wd_scheduler=wd_scheduler,
             data_loader=val_loader,
             use_bfloat16=use_bfloat16,
+            num_classes=num_classes,
             clearml_logger=clearml_logger,
             global_step=val_global_step,
             phase="Validation",
         )
 
+        # -- Log overall + per-class accuracy
+        train_cls_str = " ".join(
+            [f"c{k}={v:.1f}%" for k, v in train_class_accs.items()]
+        )
+        val_cls_str = " ".join(
+            [f"c{k}={v:.1f}%" for k, v in val_class_accs.items()]
+        )
         logger.info(
-            "[%5d] train: %.3f%% (loss: %.4f) test: %.3f%% (loss: %.4f)"
-            % (epoch + 1, train_acc, train_loss, val_acc, val_loss)
+            "[%5d] train: %.3f%% (loss: %.4f) [%s] test: %.3f%% (loss: %.4f) [%s]"
+            % (
+                epoch + 1,
+                train_acc,
+                train_loss,
+                train_cls_str,
+                val_acc,
+                val_loss,
+                val_cls_str,
+            )
         )
         if rank == 0:
             csv_logger.log(epoch + 1, train_acc, val_acc, train_loss, val_loss)  # type: ignore
@@ -334,6 +352,21 @@ def main(args_eval, resume_preempt=False):
                     value=val_loss,
                     iteration=epoch + 1,
                 )
+                # -- Per-class epoch accuracy
+                for cls_id, cls_acc in train_class_accs.items():
+                    clearml_logger.report_scalar(
+                        "Epoch Class Accuracy",
+                        f"Train class {cls_id}",
+                        value=cls_acc,
+                        iteration=epoch + 1,
+                    )
+                for cls_id, cls_acc in val_class_accs.items():
+                    clearml_logger.report_scalar(
+                        "Epoch Class Accuracy",
+                        f"Val class {cls_id}",
+                        value=cls_acc,
+                        iteration=epoch + 1,
+                    )
 
         if val_only:
             return
@@ -386,6 +419,7 @@ def run_one_epoch(
     wd_scheduler,
     data_loader,
     use_bfloat16,
+    num_classes=2,
     clearml_logger=None,
     global_step=0,
     phase="Train",
@@ -397,6 +431,11 @@ def run_one_epoch(
     criterion = torch.nn.CrossEntropyLoss()
     top1_meters = [AverageMeter() for _ in classifiers]
     loss_meters = [AverageMeter() for _ in classifiers]
+
+    # Per-class accuracy tracking
+    class_correct = torch.zeros(num_classes, device=device)
+    class_total = torch.zeros(num_classes, device=device)
+
     for itr, data in enumerate(data_loader):
         if training:
             [s.step() for s in scheduler]
@@ -448,6 +487,16 @@ def run_one_epoch(
             for t1m, t1a in zip(top1_meters, top1_accs):
                 t1m.update(t1a)
 
+            # Track per-class accuracy (use best head)
+            best_head_idx = int(np.argmax([t1m.avg for t1m in top1_meters]))
+            preds = outputs[best_head_idx].max(dim=1).indices
+            for cls_id in range(num_classes):
+                cls_mask = labels == cls_id
+                class_total[cls_id] += cls_mask.sum()
+                class_correct[cls_id] += (
+                    (preds == cls_id) & cls_mask
+                ).sum()
+
         if training:
             if use_bfloat16:
                 [
@@ -479,21 +528,49 @@ def run_one_epoch(
                 value=_agg_loss.min(),
                 iteration=global_step,
             )
+            # -- Step-level per-class accuracy
+            for cls_id in range(num_classes):
+                if class_total[cls_id] > 0:
+                    cls_acc = 100.0 * class_correct[cls_id] / class_total[cls_id]
+                    clearml_logger.report_scalar(
+                        "Step Class Accuracy",
+                        f"{phase} class {cls_id}",
+                        value=float(cls_acc),
+                        iteration=global_step,
+                    )
 
         if itr % 10 == 0:
+            # Build per-class accuracy string for logging
+            cls_parts = []
+            for cls_id in range(num_classes):
+                if class_total[cls_id] > 0:
+                    cls_acc = 100.0 * class_correct[cls_id] / class_total[cls_id]
+                    cls_parts.append(f"c{cls_id}={float(cls_acc):.1f}%")
+            cls_str = " ".join(cls_parts)
             logger.info(
-                "[%5d] %.3f%% (loss: %.4f) [%.3f%% %.3f%%] [mem: %.2e]"
+                "[%5d] %.3f%% (loss: %.4f) [%.3f%% %.3f%%] [%s] [mem: %.2e]"
                 % (
                     itr,
                     _agg_top1.max(),
                     _agg_loss.min(),
                     _agg_top1.mean(),
                     _agg_top1.min(),
+                    cls_str,
                     torch.cuda.max_memory_allocated() / 1024.0**2,
                 )
             )
 
-    return _agg_top1.max(), _agg_loss.min(), global_step  # type: ignore
+    # Compute final per-class accuracy dict
+    class_accs = {}
+    for cls_id in range(num_classes):
+        if class_total[cls_id] > 0:
+            class_accs[cls_id] = float(
+                100.0 * class_correct[cls_id] / class_total[cls_id]
+            )
+        else:
+            class_accs[cls_id] = 0.0
+
+    return _agg_top1.max(), _agg_loss.min(), global_step, class_accs  # type: ignore
 
 
 def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):

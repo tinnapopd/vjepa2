@@ -7,6 +7,8 @@ import argparse
 import multiprocessing as mp
 import os
 import pprint
+import random
+from collections import defaultdict
 
 import yaml
 
@@ -105,6 +107,83 @@ parser.add_argument(
 parser.add_argument("--model_name", type=str, help="Model name")
 parser.add_argument("--batch_size", type=int)
 parser.add_argument("--use_fsdp", action="store_true")
+parser.add_argument(
+    "--balance_classes",
+    action="store_true",
+    default=False,
+    help="Auto-balance training/validation CSVs by undersampling "
+    "the majority class to match the minority class",
+)
+parser.add_argument(
+    "--balance_seed",
+    type=int,
+    default=42,
+    help="Random seed for class balancing (default: 42)",
+)
+
+
+def _balance_csv(csv_path, seed=42):
+    """Balance a V-JEPA CSV by undersampling the majority class.
+
+    Reads '<video_path> <label>' lines, groups by label, undersamples
+    the majority class to match the minority, shuffles, and writes a
+    new file with '_balanced' suffix.
+
+    Returns the path to the balanced CSV, or None on failure.
+    """
+    # Parse entries
+    entries_by_class = defaultdict(list)
+    delimiter = " "
+    with open(csv_path, "r") as f:
+        for line in f:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            delimiter = "," if "," in line_stripped else " "
+            parts = line_stripped.split(delimiter, 1)
+            if len(parts) < 2:
+                continue
+            video_path = parts[0].strip()
+            label = int(parts[1].strip())
+            entries_by_class[label].append(video_path)
+
+    if not entries_by_class:
+        return None
+
+    # Print original distribution
+    class_counts = {
+        cls: len(items) for cls, items in sorted(entries_by_class.items())
+    }
+    min_count = min(class_counts.values())
+    print(f"  Balancing {csv_path}:")
+    print(f"    Original: {class_counts}")
+    print(f"    Target: {min_count} per class")
+
+    # Undersample each class to min_count
+    random.seed(seed)
+    balanced = []
+    for cls in sorted(entries_by_class.keys()):
+        items = entries_by_class[cls]
+        if len(items) > min_count:
+            items = random.sample(items, min_count)
+        balanced.extend((path, cls) for path in items)
+
+    # Shuffle
+    random.shuffle(balanced)
+
+    # Write balanced CSV
+    base, ext = os.path.splitext(csv_path)
+    balanced_path = f"{base}_balanced{ext}"
+    with open(balanced_path, "w") as f:
+        for video_path, label in balanced:
+            f.write(f"{video_path}{delimiter}{label}\n")
+
+    balanced_counts = defaultdict(int)
+    for _, label in balanced:
+        balanced_counts[label] += 1
+    print(f"    Balanced: {dict(sorted(balanced_counts.items()))}")
+    print(f"    Saved: {balanced_path}")
+    return balanced_path
 
 
 def process_main(args, rank, fname, world_size, devices):
@@ -280,6 +359,21 @@ if __name__ == "__main__":
             if os.path.exists(new_val):
                 data_cfg["dataset_val"] = new_val
                 print(f"  dataset_val -> {new_val}")
+
+    # Auto-balance training/validation CSVs if requested
+    if args.balance_classes:
+        if "experiment" in params and "data" in params["experiment"]:
+            data_cfg = params["experiment"]["data"]
+            for csv_key in ["dataset_train", "dataset_val"]:
+                csv_path = data_cfg.get(csv_key, "")
+                if not csv_path or not os.path.exists(csv_path):
+                    continue
+                balanced_path = _balance_csv(
+                    csv_path, seed=args.balance_seed
+                )
+                if balanced_path:
+                    data_cfg[csv_key] = balanced_path
+                    print(f"  {csv_key} -> {balanced_path} (balanced)")
 
     # If a ClearML model ID is specified, download it and override pretrain paths
     if args.model_id:

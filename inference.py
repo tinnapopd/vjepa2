@@ -135,11 +135,14 @@ def evaluate_clip_vjepa(
     device: str = "cuda:0",
 ) -> Dict[str, Any]:
     with torch.inference_mode():
-        # Handle both THWC and TCHW formats dynamically
-        if frames.shape[-1] == 3:
-            video = frames.permute(0, 3, 1, 2)
-        else:
-            video = frames
+        # frames should be in THWC format (list of HWC numpy arrays or
+        # a numpy/torch tensor of shape [T, H, W, C]).
+        # Ensure we have a list of numpy arrays for the transforms.
+        if isinstance(frames, torch.Tensor):
+            frames = frames.numpy()
+
+        # Convert to list of HWC numpy arrays (what the transforms expect)
+        frame_list = [frames[i] for i in range(frames.shape[0])]
 
         img_size = 384
         if hasattr(encoder, "patch_embed") and hasattr(
@@ -150,7 +153,7 @@ def evaluate_clip_vjepa(
             else:
                 img_size = encoder.patch_embed.img_size
 
-        # From vjepa2 demo
+        # Match training eval transform exactly (from evals/video_classification_frozen/utils.py)
         short_side_size = int(256.0 / 224 * img_size)
         eval_transform = video_transforms.Compose(
             [
@@ -165,7 +168,8 @@ def evaluate_clip_vjepa(
             ]
         )
 
-        x_pt = eval_transform(video).to(device).unsqueeze(0)
+        # Transform outputs CTHW tensor, add batch dim -> [1, C, T, H, W]
+        x_pt = eval_transform(frame_list).to(device).unsqueeze(0)
         out_patch_features_pt = encoder(x_pt)
         out_classifier = classifier(out_patch_features_pt)
 
@@ -215,6 +219,12 @@ if __name__ == "__main__":
         default=16,
         help="Number of frames per clip",
     )
+    parser.add_argument(
+        "--frame_step",
+        type=int,
+        default=4,
+        help="Frame sampling stride (must match training config frame_step)",
+    )
     parser.add_argument("--img_size", type=int, default=384, help="Image size")
     args = parser.parse_args()
 
@@ -236,7 +246,7 @@ if __name__ == "__main__":
         from src.models.vision_transformer import vit_base as vit_model  # type: ignore
 
     encoder = vit_model(
-        img_size=(args.img_size, args.img_size),
+        img_size=args.img_size,
         num_frames=args.num_frames,
         patch_size=16,
         tubelet_size=2,
@@ -281,8 +291,19 @@ if __name__ == "__main__":
     if "classifiers" in probe_dict:
         probe_dict = probe_dict["classifiers"][0]
 
+    # Strip DDP "module." prefix from checkpoint keys
     probe_dict = {k.replace("module.", ""): v for k, v in probe_dict.items()}
-    classifier.load_state_dict(probe_dict, strict=False)
+
+    # Verify checkpoint loads correctly (catch silent mismatches)
+    msg = classifier.load_state_dict(probe_dict, strict=False)
+    if msg.missing_keys:
+        print(f"WARNING: Missing keys in probe checkpoint: {msg.missing_keys}")
+    if msg.unexpected_keys:
+        print(
+            f"WARNING: Unexpected keys in probe checkpoint: {msg.unexpected_keys}"
+        )
+    if not msg.missing_keys and not msg.unexpected_keys:
+        print("Probe checkpoint loaded successfully (all keys matched).")
     classifier.to(device).eval()
 
     videos_path, video_classes, labels_path = dataset.get_paths()
@@ -294,9 +315,21 @@ if __name__ == "__main__":
             violent_class_index = class_labels.index(t_class)
             break
 
+    print(f"Class labels (sorted): {class_labels}")
+    print(f"Violent/weaponized class index: {violent_class_index}")
+    print(f"Frame sampling: {args.num_frames} frames with step {args.frame_step}"
+          f" (covers {args.num_frames * args.frame_step} raw frames per clip)")
     print(f"Found {len(videos_path)} videos to evaluate.")
     print("Starting Batch Evaluation...")
-    decord.bridge.set_bridge("torch")
+
+    # Sort videos so violent/weaponized class is evaluated first
+    combined = list(zip(videos_path, video_classes, labels_path))
+    combined.sort(key=lambda x: (x[1] != violent_class_index, x[0]))
+    videos_path, video_classes, labels_path = zip(*combined)
+
+    # Use numpy bridge so decord returns THWC numpy arrays
+    # (matches what training dataloader produces for transforms)
+    decord.bridge.set_bridge("native")
     for video_idx, (v_path, v_class, l_path) in enumerate(
         zip(videos_path, video_classes, labels_path)
     ):
@@ -316,15 +349,21 @@ if __name__ == "__main__":
 
         labels = dataset.load_labels(l_path)
 
+        # Calculate the number of raw frames needed per clip
+        # (matching training: num_frames sampled with frame_step stride)
+        raw_frames_per_clip = args.num_frames * args.frame_step
+
         video_start_time = time.time()
-        for start_idx in range(0, total_frames, args.num_frames):
-            end_idx = start_idx + args.num_frames
+        for start_idx in range(0, total_frames, raw_frames_per_clip):
+            end_idx = start_idx + raw_frames_per_clip
             if end_idx > total_frames:
                 break
 
             try:
-                indices = list(range(start_idx, end_idx))
-                clip_frames = vr.get_batch(indices).permute(0, 3, 1, 2)
+                # Sample every frame_step-th frame to match training
+                indices = list(range(start_idx, end_idx, args.frame_step))
+                # Returns THWC numpy arrays (native bridge)
+                clip_frames = vr.get_batch(indices).asnumpy()
             except Exception as e:
                 print(
                     f"Error reading frames {start_idx}-{end_idx} in {v_path}: {e}"

@@ -43,3 +43,7 @@ trained-probes/*
 # Dataset
 data/*
 !data/sample
+
+# trained-models
+trained-models/*
+!trained-models/.gitkeep
