@@ -12,9 +12,9 @@ experiment:
 
   data:
     dataset_type: VideoDataset
-    dataset_train: data/weaponized_3cls_train.csv
-    dataset_val: data/weaponized_3cls_val.csv
-    num_classes: 3          # background (0), weaponized (1), fighting (2)
+    dataset_train: /tf/data/dataset-3classes/train.csv
+    dataset_val: /tf/data/dataset-3classes/val.csv
+    num_classes: 3
     resolution: 384
     frames_per_clip: 16
     frame_step: 4

@@ -15,9 +15,9 @@ experiment:
 
   data:
     dataset_type: VideoDataset
-    dataset_train: data/weaponized_3cls_train.csv
-    dataset_val: data/weaponized_3cls_val.csv
-    num_classes: 3          # background (0), weaponized (1), fighting (2)
+    dataset_train: /tf/data/dataset-3classes/train.csv
+    dataset_val: /tf/data/dataset-3classes/val.csv
+    num_classes: 3
     resolution: 384
     frames_per_clip: 16
     frame_step: 4
@@ -33,13 +33,13 @@ experiment:
       - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.001,  start_lr: 0.001,  final_lr: 0.0, warmup: 0.0 }
 
 model_kwargs:
-  checkpoint: pretrained-models/vjepa2_1_vitg_384.pt
+  checkpoint: pretrained-models/vjepa2_1_vitG_384.pt
   module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
   pretrain_kwargs:
     encoder:
       checkpoint_key: target_encoder
       img_temporal_dim_size: 1
-      model_name: vit_gigantic_xformers
+      model_name: vit_giant_xformers
       patch_size: 16
       tubelet_size: 2
       uniform_power: true
