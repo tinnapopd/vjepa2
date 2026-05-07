@@ -379,33 +379,41 @@ def main(args_eval, resume_preempt=False):
             snapshot_freq > 0 and (epoch + 1) % snapshot_freq == 0
         )
         if rank == 0 and should_snapshot and not is_final_epoch:
-            current_task = ClearMLTask.current_task()
-            if current_task and os.path.exists(latest_path):
-                snapshot_model = OutputModel(
-                    task=current_task,
-                    name=f"{eval_tag}-classifier-e{epoch + 1}",
-                    framework="PyTorch",
-                )
-                snapshot_model.update_weights(
-                    weights_filename=latest_path,
-                    auto_delete_file=False,
-                )
-                logger.info(
-                    f"Uploaded snapshot model (epoch {epoch + 1}) to ClearML"
+            try:
+                current_task = ClearMLTask.current_task()
+                if current_task and os.path.exists(latest_path):
+                    snapshot_model = OutputModel(
+                        task=current_task,
+                        name=f"{eval_tag}-classifier-e{epoch + 1}",
+                        framework="PyTorch",
+                    )
+                    snapshot_model.update_weights(
+                        weights_filename=latest_path,
+                        auto_delete_file=False,
+                    )
+                    logger.info(
+                        f"Uploaded snapshot model (epoch {epoch + 1}) to ClearML"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to upload snapshot model (epoch {epoch + 1}) to ClearML: {e}"
                 )
 
     # Upload final trained model to ClearML
     if rank == 0:
-        current_task = ClearMLTask.current_task()
-        if current_task and os.path.exists(latest_path):
-            current_task.update_output_model(
-                model_path=latest_path,
-                model_name=f"{eval_tag}-classifier",
-                auto_delete_file=False,
-            )
-            logger.info("Uploaded trained model to ClearML")
-            current_task.flush(wait_for_uploads=True)
-            logger.info("ClearML upload flush complete")
+        try:
+            current_task = ClearMLTask.current_task()
+            if current_task and os.path.exists(latest_path):
+                current_task.update_output_model(
+                    model_path=latest_path,
+                    model_name=f"{eval_tag}-classifier",
+                    auto_delete_file=False,
+                )
+                logger.info("Uploaded trained model to ClearML")
+                current_task.flush(wait_for_uploads=True)
+                logger.info("ClearML upload flush complete")
+        except Exception as e:
+            logger.warning(f"Failed to upload final model to ClearML: {e}")
 
 
 def run_one_epoch(
