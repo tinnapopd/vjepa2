@@ -131,7 +131,7 @@ def evaluate_clip_vjepa(
     frames,
     encoder,
     classifier,
-    class_labels: List[str],
+    model_positive_idx: int,
     device: str = "cuda:0",
 ) -> Dict[str, Any]:
     with torch.inference_mode():
@@ -178,14 +178,7 @@ def evaluate_clip_vjepa(
 
         vjepa_label = label_idx
         vjepa_conf = probs[label_idx].item()
-
-        target_classes = ["weaponized", "violent"]
-        vjepa_violent_conf = 0.0
-        for t_class in target_classes:
-            if t_class in class_labels:
-                t_idx = class_labels.index(t_class)
-                vjepa_violent_conf = probs[t_idx].item()
-                break
+        vjepa_violent_conf = probs[model_positive_idx].item()
 
     return {
         "vjepa_label": vjepa_label,
@@ -277,14 +270,7 @@ if __name__ == "__main__":
 
     dataset = EvalDataset(args.dataset_dir)
     class_labels = dataset.dataset_classes
-    num_classes = len(class_labels)
 
-    classifier = AttentiveClassifier(
-        embed_dim=encoder.embed_dim,
-        num_heads=16,
-        depth=4,
-        num_classes=num_classes,
-    )
     probe_dict = torch.load(
         args.probe_weights, map_location="cpu", weights_only=True
     )
@@ -294,6 +280,24 @@ if __name__ == "__main__":
     # Strip DDP "module." prefix from checkpoint keys
     probe_dict = {k.replace("module.", ""): v for k, v in probe_dict.items()}
 
+    # Dynamically determine number of classes from the probe weights
+    model_num_classes = probe_dict["linear.weight"].shape[0]
+    if model_num_classes == 2:
+        model_positive_idx = 1  # weaponized
+        print("Detected 2-class model. Classes: [background, weaponized]")
+    elif model_num_classes == 3:
+        model_positive_idx = 2  # weaponized (ignoring fighting)
+        print("Detected 3-class model. Classes: [background, fighting, weaponized]. Ignoring fighting class.")
+    else:
+        model_positive_idx = model_num_classes - 1
+        print(f"Detected {model_num_classes}-class model.")
+
+    classifier = AttentiveClassifier(
+        embed_dim=encoder.embed_dim,
+        num_heads=16,
+        depth=4,
+        num_classes=model_num_classes,
+    )
     # Verify checkpoint loads correctly (catch silent mismatches)
     msg = classifier.load_state_dict(probe_dict, strict=False)
     if msg.missing_keys:
@@ -309,22 +313,21 @@ if __name__ == "__main__":
     videos_path, video_classes, labels_path = dataset.get_paths()
 
     tp, fp, tn, fn = 0, 0, 0, 0
-    violent_class_index = 1
-    for t_class in ["weaponized", "violent"]:
-        if t_class in class_labels:
-            violent_class_index = class_labels.index(t_class)
-            break
+    
+    # Track metrics separately by folder
+    folder_metrics = {}
+    for c_name in class_labels:
+        folder_metrics[c_name] = {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "videos": []}
 
-    print(f"Class labels (sorted): {class_labels}")
-    print(f"Violent/weaponized class index: {violent_class_index}")
+    print(f"Dataset folder classes: {class_labels}")
     print(f"Frame sampling: {args.num_frames} frames with step {args.frame_step}"
           f" (covers {args.num_frames * args.frame_step} raw frames per clip)")
     print(f"Found {len(videos_path)} videos to evaluate.")
     print("Starting Batch Evaluation...")
 
-    # Sort videos so violent/weaponized class is evaluated first
+    # Sort videos so we evaluate sequentially
     combined = list(zip(videos_path, video_classes, labels_path))
-    combined.sort(key=lambda x: (x[1] != violent_class_index, x[0]))
+    combined.sort(key=lambda x: (x[1], x[0]))
     videos_path, video_classes, labels_path = zip(*combined)
 
     # Use numpy bridge so decord returns THWC numpy arrays
@@ -375,39 +378,25 @@ if __name__ == "__main__":
             is_violent_clip = dataset.clip_overlaps_any_label(
                 clip_start_sec, clip_end_sec, labels
             )
-            true_label = (
-                violent_class_index
-                if is_violent_clip
-                else (0 if violent_class_index == 1 else 1)
-            )
 
             res = evaluate_clip_vjepa(
-                clip_frames, encoder, classifier, class_labels, device
+                clip_frames, encoder, classifier, model_positive_idx, device
             )
             pred_label = res["vjepa_label"]
 
-            if (
-                pred_label == violent_class_index
-                and true_label == violent_class_index
-            ):
+            is_pred_positive = (pred_label == model_positive_idx)
+            is_true_positive = is_violent_clip
+
+            if is_pred_positive and is_true_positive:
                 tp += 1
                 vid_tp += 1
-            elif (
-                pred_label == violent_class_index
-                and true_label != violent_class_index
-            ):
+            elif is_pred_positive and not is_true_positive:
                 fp += 1
                 vid_fp += 1
-            elif (
-                pred_label != violent_class_index
-                and true_label != violent_class_index
-            ):
+            elif not is_pred_positive and not is_true_positive:
                 tn += 1
                 vid_tn += 1
-            elif (
-                pred_label != violent_class_index
-                and true_label == violent_class_index
-            ):
+            elif not is_pred_positive and is_true_positive:
                 fn += 1
                 vid_fn += 1
 
@@ -425,9 +414,69 @@ if __name__ == "__main__":
             + f"TN={vid_tn}, FN={vid_fn} | Inference FPS: {inf_fps:.2f}"
         )
 
-    print("\nEvaluation Results:")
-    metrics = compute_metrics(tp, fp, tn, fn)
-    for k, v in metrics.items():
+        # Get the class folder name for this video
+        class_name = os.path.basename(os.path.dirname(os.path.dirname(v_path)))
+        if class_name in folder_metrics:
+            folder_metrics[class_name]["tp"] += vid_tp
+            folder_metrics[class_name]["fp"] += vid_fp
+            folder_metrics[class_name]["tn"] += vid_tn
+            folder_metrics[class_name]["fn"] += vid_fn
+            folder_metrics[class_name]["videos"].append({
+                "name": os.path.basename(v_path),
+                "tp": vid_tp,
+                "fp": vid_fp,
+                "tn": vid_tn,
+                "fn": vid_fn,
+                "fps": inf_fps
+            })
+
+    print("\nGlobal Evaluation Results:")
+    global_metrics = compute_metrics(tp, fp, tn, fn)
+    for k, v in global_metrics.items():
         print(f"{k}: {v}")
 
-    print(f"\nConfusion Matrix: TP={tp}, FP={fp}, TN={tn}, FN={fn}")
+    print(f"\nGlobal Confusion Matrix: TP={tp}, FP={fp}, TN={tn}, FN={fn}")
+
+    # Save results separate by using folder
+    out_base_dir = "inference"
+    os.makedirs(out_base_dir, exist_ok=True)
+    
+    print(f"\nSaving folder-separated results to '{out_base_dir}/' ...")
+    for c_name, m_dict in folder_metrics.items():
+        if len(m_dict["videos"]) == 0:
+            continue
+            
+        c_dir = os.path.join(out_base_dir, c_name)
+        os.makedirs(c_dir, exist_ok=True)
+        
+        c_tp, c_fp, c_tn, c_fn = m_dict["tp"], m_dict["fp"], m_dict["tn"], m_dict["fn"]
+        c_metrics = compute_metrics(c_tp, c_fp, c_tn, c_fn)
+        
+        # Save metrics
+        metrics_csv = os.path.join(c_dir, "metrics.csv")
+        with open(metrics_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Metric", "Value"])
+            writer.writerow(["TP", c_tp])
+            writer.writerow(["FP", c_fp])
+            writer.writerow(["TN", c_tn])
+            writer.writerow(["FN", c_fn])
+            for k, v in c_metrics.items():
+                writer.writerow([k, v])
+                
+        # Save video stats
+        video_csv = os.path.join(c_dir, "video_results.csv")
+        with open(video_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Video", "TP", "FP", "TN", "FN", "Inference_FPS"])
+            for v_stat in m_dict["videos"]:
+                writer.writerow([
+                    v_stat["name"], 
+                    v_stat["tp"], 
+                    v_stat["fp"], 
+                    v_stat["tn"], 
+                    v_stat["fn"], 
+                    round(v_stat["fps"], 2)
+                ])
+                
+        print(f"  Saved results for '{c_name}' in {c_dir}/")
