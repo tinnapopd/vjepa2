@@ -47,3 +47,6 @@ data/*
 # trained-models
 trained-models/*
 !trained-models/.gitkeep
+
+# Results
+results/*
