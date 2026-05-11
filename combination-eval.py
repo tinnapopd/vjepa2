@@ -669,7 +669,7 @@ def main() -> None:
     parser.add_argument(
         "--probe_weights",
         type=str,
-        default="data/outputs/evals_2_1/vitG-384/weaponized_2cls/video_classification_frozen/weaponized-2cls-vitg16-384/best.pt",
+        default="/tf/data/outputs/evals_2_1/vitG-384/weaponized_2cls/video_classification_frozen/weaponized-2cls-vitg16-384/best.pt",
         help="Path to attentive probe weights",
     )
     parser.add_argument(
