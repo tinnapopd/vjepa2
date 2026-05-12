@@ -77,18 +77,62 @@ def clip_overlaps_any_label(
     return False
 
 
+def _extract_human_bboxes(
+    frame: np.ndarray,
+    human_model: YOLO,
+    human_threshold: float,
+) -> List[Tuple[int, int, int, int]]:
+    results = human_model.predict(
+        frame, verbose=False, conf=human_threshold, classes=[0],
+    )
+    bboxes: List[Tuple[int, int, int, int]] = []
+    for r in results:
+        if r.boxes is not None and len(r.boxes) > 0:
+            for box in r.boxes.xyxy.cpu().numpy().astype(int):
+                bboxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+    return bboxes
+
+
+def _pad_bbox(
+    x1: int, y1: int, x2: int, y2: int,
+    img_h: int, img_w: int,
+    pad_ratio: float = 0.1,
+) -> Tuple[int, int, int, int]:
+    """Expand a bounding box by *pad_ratio* on each side, clamped to image."""
+    bw = x2 - x1
+    bh = y2 - y1
+    dx = int(bw * pad_ratio)
+    dy = int(bh * pad_ratio)
+    return (
+        max(0, x1 - dx),
+        max(0, y1 - dy),
+        min(img_w, x2 + dx),
+        min(img_h, y2 + dy),
+    )
+
+
 def evaluate_clip_yolo(
     frames: List[np.ndarray],
     yolo_model: YOLO,
     yolo_threshold: float,
+    human_model: YOLO | None = None,
+    human_threshold: float = 0.3,
+    bbox_pad_ratio: float = 0.1,
 ) -> Dict[str, Any]:
-    """Run YOLO on every frame in the clip.
+    """Run weapon detection on every frame in the clip.
+
+    **Two-stage pipeline** (when *human_model* is provided):
+      1. Detect humans with *human_model* (COCO class 0).
+      2. For each human bounding box, crop the region (with padding)
+         and run *yolo_model* (weapon detector) on the crop.
+
+    Falls back to full-frame weapon detection when *human_model* is None.
 
     Returns a dict with:
-        yolo_frame_count  - number of frames with ≥1 gun detection
+        yolo_frame_count  - number of frames with ≥1 weapon detection
         yolo_frame_ratio  - frame_count / total_frames
-        yolo_max_conf     - max confidence across all frames
-        yolo_avg_conf     - mean confidence across frames WITH detections
+        yolo_max_conf     - max weapon confidence across all frames
+        yolo_avg_conf     - mean weapon confidence across frames WITH detections
     """
     total = len(frames)
     frame_count = 0
@@ -96,14 +140,42 @@ def evaluate_clip_yolo(
     conf_sum = 0.0
 
     for frame in frames:
-        results = yolo_model.predict(frame, verbose=False, conf=yolo_threshold)
         frame_has_det = False
         frame_max = 0.0
-        for r in results:
-            if r.boxes is not None and len(r.boxes) > 0:
-                frame_has_det = True
-                c = float(r.boxes.conf.max())
-                frame_max = max(frame_max, c)
+
+        if human_model is not None:
+            # --- Stage 1: detect humans ---
+            h, w = frame.shape[:2]
+            human_bboxes = _extract_human_bboxes(
+                frame, human_model, human_threshold
+            )
+
+            # --- Stage 2: weapon detection inside each human bbox ---
+            for x1, y1, x2, y2 in human_bboxes:
+                px1, py1, px2, py2 = _pad_bbox(
+                    x1, y1, x2, y2, h, w, bbox_pad_ratio
+                )
+                crop = frame[py1:py2, px1:px2]
+                if crop.size == 0:
+                    continue
+                results = yolo_model.predict(
+                    crop, verbose=False, conf=yolo_threshold
+                )
+                for r in results:
+                    if r.boxes is not None and len(r.boxes) > 0:
+                        frame_has_det = True
+                        c = float(r.boxes.conf.max())
+                        frame_max = max(frame_max, c)
+        else:
+            # Fallback: full-frame weapon detection (original behaviour)
+            results = yolo_model.predict(
+                frame, verbose=False, conf=yolo_threshold
+            )
+            for r in results:
+                if r.boxes is not None and len(r.boxes) > 0:
+                    frame_has_det = True
+                    c = float(r.boxes.conf.max())
+                    frame_max = max(frame_max, c)
 
         if frame_has_det:
             frame_count += 1
@@ -352,6 +424,9 @@ def evaluate_dataset(
     weighted_threshold: float,
     num_frames: int,
     frame_step: int,
+    human_model: YOLO | None = None,
+    human_threshold: float = 0.3,
+    bbox_pad_ratio: float = 0.1,
 ) -> Dict[str, Any]:
     """Walk the dataset, evaluate every clip, and return the full report."""
 
@@ -452,7 +527,12 @@ def evaluate_dataset(
 
                 # YOLO inference (per-frame, on the strided frames)
                 yolo_result = evaluate_clip_yolo(
-                    sampled_bgr_frames, yolo_model, yolo_threshold
+                    sampled_bgr_frames,
+                    yolo_model,
+                    yolo_threshold,
+                    human_model=human_model,
+                    human_threshold=human_threshold,
+                    bbox_pad_ratio=bbox_pad_ratio,
                 )
 
                 # V-JEPA 2.1 inference (whole clip, same strided frames)
@@ -691,12 +771,25 @@ def main() -> None:
         help="V-JEPA encoder input image size",
     )
 
-    # YOLO model path
+    # YOLO model paths
     parser.add_argument(
         "--yolo26-checkpoint",
         type=str,
         default="/tf/data/pretrained-models/yolo26m-weapon-det.pt",
-        help="Path to YOLOv26 gun detection checkpoint",
+        help="Path to YOLOv26 weapon detection checkpoint",
+    )
+
+    parser.add_argument(
+        "--human-threshold",
+        type=float,
+        default=0.3,
+        help="Confidence threshold for human (person) detection",
+    )
+    parser.add_argument(
+        "--bbox-pad-ratio",
+        type=float,
+        default=0.1,
+        help="Ratio to pad human bounding boxes before weapon search",
     )
 
     # Thresholds / strategy parameters
@@ -865,8 +958,12 @@ def main() -> None:
         logger.info("Probe checkpoint loaded successfully (all keys matched).")
     classifier.to(device).eval()
 
-    # Load YOLOv26
-    logger.info("Loading YOLOv26 gun detector …")
+    # Load YOLOv26n human detector (pretrained COCO, auto-downloaded)
+    logger.info("Loading YOLOv26n human detector …")
+    human_model = YOLO("yolo26n.pt")
+
+    # Load YOLOv26 weapon detector
+    logger.info("Loading YOLOv26 weapon detector …")
     yolo_model = YOLO(args.yolo26_checkpoint)
 
     # Run evaluation
@@ -891,6 +988,9 @@ def main() -> None:
         weighted_threshold=args.weighted_threshold,
         num_frames=args.num_frames,
         frame_step=args.frame_step,
+        human_model=human_model,
+        human_threshold=args.human_threshold,
+        bbox_pad_ratio=args.bbox_pad_ratio,
     )
     elapsed = time.time() - t_start
 
@@ -898,9 +998,12 @@ def main() -> None:
     report["config"] = {
         "dataset": os.path.abspath(args.dataset),
         "yolo_checkpoint": args.yolo26_checkpoint,
+        "yolo26n_model": "yolo26n.pt",
         "encoder_weights": args.encoder_weights,
         "probe_weights": args.probe_weights,
         "yolo_threshold": args.yolo_threshold,
+        "human_threshold": args.human_threshold,
+        "bbox_pad_ratio": args.bbox_pad_ratio,
         "vjepa_threshold": args.vjepa_threshold,
         "strong_ratio": args.strong_ratio,
         "high_conf": args.high_conf,
