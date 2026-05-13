@@ -249,7 +249,10 @@ def collect_clip_features(
                         "start_sec": round(cs_sec, 2),
                         "end_sec": round(ce_sec, 2),
                         "ground_truth": gt,
-                        **{c: round(merged.get(c, 0.0), 4) for c in feature_columns},
+                        **{
+                            c: round(merged.get(c, 0.0), 4)
+                            for c in feature_columns
+                        },
                     }
                 )
 
@@ -344,7 +347,9 @@ def print_results(
             f"than best single model"
         )
 
-    fp_saved = min(yolo_metrics["fp"], vjepa_metrics["fp"]) - meta_metrics["fp"]
+    fp_saved = (
+        min(yolo_metrics["fp"], vjepa_metrics["fp"]) - meta_metrics["fp"]
+    )
     if fp_saved > 0:
         print(f"  ✅ Meta-model saves {fp_saved} false positive(s)")
 

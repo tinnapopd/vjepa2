@@ -204,8 +204,28 @@ FEATURE_COLUMNS = [
 ]
 
 
-def collect_clip_features(
-    dataset_dir: str,
+def parse_dataset_csv(csv_path: str) -> List[Tuple[str, int]]:
+    """Parse a V-JEPA-style dataset CSV: '<video_path> <label>' per line."""
+    entries: List[Tuple[str, int]] = []
+    with open(csv_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.rsplit(" ", 1)
+            if len(parts) != 2:
+                continue
+            video_path = parts[0].strip()
+            try:
+                label = int(parts[1].strip())
+            except ValueError:
+                continue
+            entries.append((video_path, label))
+    return entries
+
+
+def collect_clip_features_from_csv(
+    csv_path: str,
     yolo_model: YOLO,
     encoder: torch.nn.Module,
     classifier: torch.nn.Module,
@@ -217,13 +237,22 @@ def collect_clip_features(
     num_frames: int,
     frame_step: int,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
-    """Collect stacking features for every clip in the dataset.
+    """Collect stacking features from a CSV-based dataset.
+
+    CSV format: '<video_path> <label>' per line (V-JEPA training format).
+    Each video gets a whole-video label — all clips from a positive video
+    are labeled positive, and vice versa.
 
     Returns:
         X: np.ndarray of shape (n_clips, n_features)
         y: np.ndarray of shape (n_clips,) — ground-truth labels (0/1)
         metadata: list of per-clip dicts for traceability
     """
+    entries = parse_dataset_csv(csv_path)
+    if not entries:
+        raise SystemExit(f"Error: no entries found in {csv_path}")
+    logger.info(f"Loaded {len(entries)} videos from {csv_path}")
+
     raw_per_clip = num_frames * frame_step
     all_features: List[List[float]] = []
     all_labels: List[int] = []
@@ -236,77 +265,64 @@ def collect_clip_features(
         if col not in feat_cols:
             feat_cols.append(col)
 
-    for folder, is_pos_folder in [("violent", True), ("non-violent", False)]:
-        vdir = os.path.join(dataset_dir, folder, "videos")
-        ldir = os.path.join(dataset_dir, folder, "labels")
-        if not os.path.isdir(vdir):
-            logger.warning(f"Not found: {vdir}")
+    for vi, (vp, video_label) in enumerate(entries):
+        # Map CSV label to binary: positive_idx → 1, else → 0
+        gt = 1 if video_label == positive_idx else 0
+
+        logger.info(f"  [{vi + 1}/{len(entries)}] {vp} (label={video_label})")
+
+        cap = cv2.VideoCapture(vp)
+        if not cap.isOpened():
+            logger.warning(f"Cannot open: {vp}")
             continue
-        vpaths = find_videos(vdir)
-        logger.info(f"Found {len(vpaths)} videos in {folder}/videos/")
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        for vi, vp in enumerate(vpaths):
-            vname = os.path.relpath(vp, dataset_dir)
-            logger.info(f"  [{vi + 1}/{len(vpaths)}] {vname}")
-            lpath = os.path.join(ldir, f"{Path(vp).stem}.csv")
-            labels = load_labels(lpath)
+        for cs in range(0, total_frames, raw_per_clip):
+            ce = cs + raw_per_clip - 1
+            if ce >= total_frames:
+                break
+            cs_sec, ce_sec = cs / fps, ce / fps
 
-            cap = cv2.VideoCapture(vp)
-            if not cap.isOpened():
-                continue
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            for cs in range(0, total_frames, raw_per_clip):
-                ce = cs + raw_per_clip - 1
-                if ce >= total_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, cs)
+            bgr, rgb = [], []
+            for off in range(raw_per_clip):
+                ret, frame = cap.read()
+                if not ret:
                     break
-                cs_sec, ce_sec = cs / fps, ce / fps
+                if off % frame_step == 0:
+                    bgr.append(frame)
+                    rgb.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            if len(bgr) < num_frames:
+                break
 
-                cap.set(cv2.CAP_PROP_POS_FRAMES, cs)
-                bgr, rgb = [], []
-                for off in range(raw_per_clip):
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    if off % frame_step == 0:
-                        bgr.append(frame)
-                        rgb.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                if len(bgr) < num_frames:
-                    break
+            # Run both models
+            yr = run_yolo_on_clip(bgr, yolo_model, yolo_threshold)
+            vr = run_vjepa_on_clip(
+                rgb, encoder, classifier, positive_idx, device
+            )
 
-                # Ground truth
-                gt = (
-                    1
-                    if is_pos_folder
-                    and clip_overlaps_any_label(cs_sec, ce_sec, labels)
-                    else 0
-                )
+            # Build feature vector
+            merged = {**yr, **vr}
+            feat_vec = [merged.get(c, 0.0) for c in feat_cols]
 
-                # Run both models
-                yr = run_yolo_on_clip(bgr, yolo_model, yolo_threshold)
-                vr = run_vjepa_on_clip(
-                    rgb, encoder, classifier, positive_idx, device
-                )
+            all_features.append(feat_vec)
+            all_labels.append(gt)
+            metadata.append(
+                {
+                    "video": vp,
+                    "video_label": video_label,
+                    "start_sec": round(cs_sec, 2),
+                    "end_sec": round(ce_sec, 2),
+                    "ground_truth": gt,
+                    **{
+                        c: round(merged.get(c, 0.0), 4)
+                        for c in feat_cols
+                    },
+                }
+            )
 
-                # Build feature vector
-                merged = {**yr, **vr}
-                feat_vec = [merged.get(c, 0.0) for c in feat_cols]
-
-                all_features.append(feat_vec)
-                all_labels.append(gt)
-                metadata.append(
-                    {
-                        "video": vname,
-                        "folder": folder,
-                        "start_sec": round(cs_sec, 2),
-                        "end_sec": round(ce_sec, 2),
-                        "ground_truth": gt,
-                        **{c: round(merged.get(c, 0.0), 4) for c in feat_cols},
-                    }
-                )
-
-            cap.release()
+        cap.release()
 
     X = np.array(all_features, dtype=np.float32)
     y = np.array(all_labels, dtype=np.int32)
@@ -463,8 +479,58 @@ def train_and_evaluate_stacking(
 # ---------------------------------------------------------------------------
 
 
+def evaluate_on_val(
+    results: Dict[str, Any],
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+) -> Dict[str, Any]:
+    """Evaluate all trained meta-models on a held-out validation set."""
+    val_results: Dict[str, Any] = {}
+
+    # Baselines
+    yolo_pred = (X_val[:, FEATURE_COLUMNS.index("yolo_frame_count")] > 0).astype(int)
+    val_results["YOLO_only"] = {
+        "metrics": compute_eval_metrics(y_val, yolo_pred),
+    }
+    vjepa_pred = (
+        X_val[:, FEATURE_COLUMNS.index("vjepa_violent_conf")] > 0.5
+    ).astype(int)
+    val_results["VJEPA_only"] = {
+        "metrics": compute_eval_metrics(y_val, vjepa_pred),
+    }
+
+    # Meta-models
+    for name, entry in results.items():
+        if "model_instance" not in entry:
+            continue
+        model = entry["model_instance"]
+        try:
+            pred = model.predict(X_val)
+            val_results[name] = {
+                "metrics": compute_eval_metrics(y_val, pred),
+            }
+        except Exception as e:
+            val_results[name] = {"error": str(e)}
+
+    return val_results
+
+
+def _print_metric_row(
+    name: str, m: Dict[str, Any], marker: str = ""
+) -> None:
+    print(
+        f"  {name:<22}"
+        f"{m['tp']:>5} {m['fp']:>5} {m['tn']:>5} {m['fn']:>5}  "
+        f"{m['precision']:>6.3f} {m['recall']:>6.3f} "
+        f"{m['f1']:>6.3f} {m['f2']:>6.3f} "
+        f"{m['specificity']:>6.3f}{marker}"
+    )
+
+
 def print_comparison_table(
-    results: Dict[str, Any], feature_cols: List[str]
+    train_results: Dict[str, Any],
+    val_results: Dict[str, Any] | None,
+    feature_cols: List[str],
 ) -> None:
     print("\n" + "=" * 82)
     print("  META-MODEL STACKING RESULTS")
@@ -475,35 +541,57 @@ def print_comparison_table(
         f"{'TP':>5} {'FP':>5} {'TN':>5} {'FN':>5}  "
         f"{'Prec':>6} {'Rec':>6} {'F1':>6} {'F2':>6} {'Spec':>6}"
     )
+
+    # --- Train OOF ---
+    print("\n  ── Train (OOF) ──")
     print(header)
     print("  " + "-" * 78)
 
     sorted_models = sorted(
-        results.keys(),
-        key=lambda k: results[k].get("metrics", {}).get("f1", 0),
+        train_results.keys(),
+        key=lambda k: train_results[k].get("metrics", {}).get("f1", 0),
         reverse=True,
     )
-
-    best_name = sorted_models[0] if sorted_models else ""
-
     for name in sorted_models:
-        entry = results[name]
+        entry = train_results[name]
         if "error" in entry:
             print(f"  {name:<22} ERROR: {entry['error']}")
             continue
-        m = entry["metrics"]
-        marker = " ★" if name == best_name else ""
-        print(
-            f"  {name:<22}"
-            f"{m['tp']:>5} {m['fp']:>5} {m['tn']:>5} {m['fn']:>5}  "
-            f"{m['precision']:>6.3f} {m['recall']:>6.3f} "
-            f"{m['f1']:>6.3f} {m['f2']:>6.3f} "
-            f"{m['specificity']:>6.3f}{marker}"
-        )
+        _print_metric_row(name, entry["metrics"])
 
-    # Feature importances for the best model
-    if best_name and "feature_importances" in results[best_name]:
-        imps = results[best_name]["feature_importances"]
+    # --- Val ---
+    if val_results:
+        print("\n  ── Validation ──")
+        print(header)
+        print("  " + "-" * 78)
+
+        val_sorted = sorted(
+            val_results.keys(),
+            key=lambda k: val_results[k].get("metrics", {}).get("f1", 0),
+            reverse=True,
+        )
+        best_val = val_sorted[0] if val_sorted else ""
+        for name in val_sorted:
+            entry = val_results[name]
+            if "error" in entry:
+                print(f"  {name:<22} ERROR: {entry['error']}")
+                continue
+            marker = " ★" if name == best_val else ""
+            _print_metric_row(name, entry["metrics"], marker)
+
+    # Feature importances for the best trained model
+    pick_from = val_results if val_results else train_results
+    best_name = max(
+        (k for k in pick_from if "metrics" in pick_from[k]),
+        key=lambda k: pick_from[k]["metrics"]["f1"],
+        default="",
+    )
+    if (
+        best_name
+        and best_name in train_results
+        and "feature_importances" in train_results[best_name]
+    ):
+        imps = train_results[best_name]["feature_importances"]
         if imps is not None:
             print(f"\n  Feature importances ({best_name}):")
             pairs = sorted(
@@ -525,7 +613,18 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description="Meta-model stacking: V-JEPA + YOLO."
     )
-    p.add_argument("--dataset", type=str, default="/tf/data/test-dataset")
+    p.add_argument(
+        "--dataset-csv",
+        type=str,
+        default="/tf/data/dataset-2classes/train.csv",
+        help="Path to training CSV: '<video_path> <label>' per line",
+    )
+    p.add_argument(
+        "--val-csv",
+        type=str,
+        default="/tf/data/dataset-2classes/val.csv",
+        help="Path to validation CSV (same format as --dataset-csv)",
+    )
     p.add_argument(
         "--encoder_weights",
         type=str,
@@ -557,12 +656,11 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    # Validate dataset
-    for sub in ("violent/videos", "non-violent/videos"):
-        if not os.path.isdir(os.path.join(args.dataset, sub)):
-            raise SystemExit(
-                f"Error: not found: {os.path.join(args.dataset, sub)}"
-            )
+    # Validate dataset CSVs
+    if not os.path.isfile(args.dataset_csv):
+        raise SystemExit(f"Error: CSV not found: {args.dataset_csv}")
+    if not os.path.isfile(args.val_csv):
+        raise SystemExit(f"Error: val CSV not found: {args.val_csv}")
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
@@ -642,8 +740,8 @@ def main() -> None:
     # --- Step 1: Collect features from all clips ---
     logger.info("Collecting per-clip features …")
     t0 = time.time()
-    X, y, metadata = collect_clip_features(
-        args.dataset,
+    X, y, metadata = collect_clip_features_from_csv(
+        args.dataset_csv,
         yolo_model,
         encoder,
         classifier,
@@ -664,35 +762,67 @@ def main() -> None:
         if col not in feat_cols:
             feat_cols.append(col)
 
-    # --- Step 2: Train & evaluate meta-models ---
+    # --- Step 2: Train & evaluate meta-models (OOF on train) ---
     logger.info("Training meta-models with OOF cross-validation …")
     t1 = time.time()
-    results = train_and_evaluate_stacking(
+    train_results = train_and_evaluate_stacking(
         X,
         y,
         n_splits=args.n_folds,
     )
     train_time = time.time() - t1
 
-    # --- Step 3: Print results ---
-    print_comparison_table(results, feat_cols)
+    # --- Step 3: Collect val features & evaluate on val ---
+    logger.info("Collecting validation features …")
+    t2 = time.time()
+    X_val, y_val, val_metadata = collect_clip_features_from_csv(
+        args.val_csv,
+        yolo_model,
+        encoder,
+        classifier,
+        positive_idx,
+        num_classes,
+        device,
+        yolo_threshold=args.yolo_threshold,
+        num_frames=args.num_frames,
+        frame_step=args.frame_step,
+    )
+    val_time = time.time() - t2
+    logger.info(
+        f"Val set: {len(y_val)} clips "
+        f"({int(y_val.sum())} pos, {len(y_val) - int(y_val.sum())} neg) "
+        f"in {val_time:.1f}s"
+    )
 
-    # --- Step 4: Save best model ---
-    meta_only = {
+    logger.info("Evaluating meta-models on validation set …")
+    val_results = evaluate_on_val(train_results, X_val, y_val)
+
+    # --- Step 4: Print results ---
+    print_comparison_table(train_results, val_results, feat_cols)
+
+    # --- Step 5: Save best model (by val F1) ---
+    val_meta_only = {
         k: v
-        for k, v in results.items()
-        if "metrics" in v and "model_instance" in v
+        for k, v in val_results.items()
+        if "metrics" in v and k in train_results and "model_instance" in train_results[k]
     }
-    if meta_only:
-        best_name = max(meta_only, key=lambda k: meta_only[k]["metrics"]["f1"])
-        best_model = meta_only[best_name]["model_instance"]
+    if val_meta_only:
+        best_name = max(
+            val_meta_only, key=lambda k: val_meta_only[k]["metrics"]["f1"]
+        )
+        best_model = train_results[best_name]["model_instance"]
+        logger.info(
+            f"Best meta-model by val F1: {best_name} "
+            f"(val F1={val_meta_only[best_name]['metrics']['f1']:.4f})"
+        )
         with open(args.save_model, "wb") as f:
             pickle.dump(
                 {
                     "model": best_model,
                     "model_name": best_name,
                     "feature_columns": feat_cols,
-                    "metrics": meta_only[best_name]["metrics"],
+                    "train_metrics": train_results[best_name]["metrics"],
+                    "val_metrics": val_meta_only[best_name]["metrics"],
                 },
                 f,
             )
@@ -700,16 +830,16 @@ def main() -> None:
             f"Best meta-model ({best_name}) saved to: {args.save_model}"
         )
 
-    # --- Step 5: Save reports ---
-    # Strip non-serializable model instances
-    serializable = {}
-    for k, v in results.items():
+    # --- Step 6: Save reports ---
+    serializable_train = {}
+    for k, v in train_results.items():
         entry = {kk: vv for kk, vv in v.items() if kk != "model_instance"}
-        serializable[k] = entry
+        serializable_train[k] = entry
 
     report = {
         "config": {
-            "dataset": os.path.abspath(args.dataset),
+            "dataset_csv": os.path.abspath(args.dataset_csv),
+            "val_csv": os.path.abspath(args.val_csv),
             "yolo_threshold": args.yolo_threshold,
             "encoder_weights": args.encoder_weights,
             "probe_weights": args.probe_weights,
@@ -722,15 +852,20 @@ def main() -> None:
             "feature_columns": feat_cols,
             "device": device,
             "collect_time_sec": round(collect_time, 1),
+            "val_collect_time_sec": round(val_time, 1),
             "train_time_sec": round(train_time, 1),
         },
         "dataset_stats": {
-            "total_clips": len(y),
-            "positive_clips": int(y.sum()),
-            "negative_clips": int(len(y) - y.sum()),
+            "train_clips": len(y),
+            "train_positive": int(y.sum()),
+            "train_negative": int(len(y) - y.sum()),
+            "val_clips": len(y_val),
+            "val_positive": int(y_val.sum()),
+            "val_negative": int(len(y_val) - y_val.sum()),
             "n_features": X.shape[1],
         },
-        "results": serializable,
+        "train_results": serializable_train,
+        "val_results": val_results,
     }
     with open(args.output, "w") as f:
         json.dump(report, f, indent=2)
@@ -741,10 +876,11 @@ def main() -> None:
             w = csv.DictWriter(f, fieldnames=metadata[0].keys())
             w.writeheader()
             w.writerows(metadata)
-        logger.info(f"Per-clip CSV saved to: {args.output_csv}")
+        logger.info(f"Per-clip CSV (train) saved to: {args.output_csv}")
 
     logger.info(
-        f"Done — collection: {collect_time:.1f}s, training: {train_time:.1f}s"
+        f"Done — train: {collect_time:.1f}s collect + {train_time:.1f}s fit, "
+        f"val: {val_time:.1f}s"
     )
 
 
