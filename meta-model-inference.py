@@ -64,34 +64,60 @@ def run_yolo_on_clip(
     total = len(frames)
     det_count = 0
     max_conf = 0.0
-    conf_sum = 0.0
     all_confs: List[float] = []
+    total_boxes = 0
+    max_box_area = 0.0
+    frame_hits: List[bool] = []
 
     for frame in frames:
+        frame_h, frame_w = frame.shape[:2]
+        frame_area = frame_h * frame_w
         results = yolo_model.predict(frame, verbose=False, conf=threshold)
         frame_max = 0.0
         hit = False
         for r in results:
             if r.boxes is not None and len(r.boxes) > 0:
                 hit = True
+                total_boxes += len(r.boxes)
                 c = float(r.boxes.conf.max())
                 frame_max = max(frame_max, c)
+                for box in r.boxes.xyxy:
+                    x1, y1, x2, y2 = box
+                    area = float((x2 - x1) * (y2 - y1)) / frame_area
+                    max_box_area = max(max_box_area, area)
+        frame_hits.append(hit)
         if hit:
             det_count += 1
             max_conf = max(max_conf, frame_max)
-            conf_sum += frame_max
             all_confs.append(frame_max)
 
-    avg_conf = conf_sum / det_count if det_count else 0.0
     std_conf = float(np.std(all_confs)) if all_confs else 0.0
     frame_ratio = det_count / total if total else 0.0
+
+    # Longest consecutive detection streak
+    streak, max_streak = 0, 0
+    for h in frame_hits:
+        if h:
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    # Confidence ramp (slope of per-frame max conf over time)
+    conf_ramp = 0.0
+    if len(all_confs) >= 3:
+        x = np.arange(len(all_confs), dtype=np.float64)
+        conf_ramp = float(np.polyfit(x, all_confs, 1)[0])
 
     return {
         "yolo_frame_count": det_count,
         "yolo_frame_ratio": frame_ratio,
         "yolo_max_conf": max_conf,
-        "yolo_avg_conf": avg_conf,
         "yolo_std_conf": std_conf,
+        "yolo_total_detections": total_boxes,
+        "yolo_detection_streak": max_streak,
+        "yolo_max_box_area": max_box_area,
+        "yolo_conf_ramp": conf_ramp,
     }
 
 
@@ -130,14 +156,24 @@ def run_vjepa_on_clip(
         probs = F.softmax(logits[0], dim=0)
         label = int(logits.argmax(dim=1).item())
 
-    result: Dict[str, float] = {
+        # Prediction entropy (uncertainty measure)
+        entropy = -float((probs * torch.log(probs + 1e-8)).sum())
+
+        # Logit margin (gap between top-2 class logits)
+        top2 = torch.topk(logits[0], k=min(2, logits.shape[1]))
+        margin = (
+            float(top2.values[0] - top2.values[1])
+            if logits.shape[1] >= 2
+            else 0.0
+        )
+
+    return {
         "vjepa_label": float(label),
         "vjepa_conf": float(probs[label].item()),
         "vjepa_violent_conf": float(probs[positive_idx].item()),
+        "vjepa_entropy": entropy,
+        "vjepa_logit_margin": margin,
     }
-    for i in range(probs.shape[0]):
-        result[f"vjepa_prob_cls{i}"] = float(probs[i].item())
-    return result
 
 
 def collect_clip_features(
@@ -211,6 +247,11 @@ def collect_clip_features(
                 )
 
                 merged = {**yr, **vr}
+                # Cross-model agreement
+                yolo_says = 1.0 if merged["yolo_frame_ratio"] > 0 else 0.0
+                vjepa_says = 1.0 if merged["vjepa_violent_conf"] > 0.5 else 0.0
+                merged["yolo_x_vjepa_agreement"] = yolo_says * vjepa_says
+
                 feat_vec = [merged.get(c, 0.0) for c in feature_columns]
 
                 all_features.append(feat_vec)
@@ -394,13 +435,13 @@ def main() -> None:
     wp = wb.split("_")
     ap = wp[2] if len(wp) > 2 else ""
     if "vitg" in ap:
-        from src.models.vision_transformer import (
+        from src.models.vision_transformer import (  # type: ignore
             vit_gigantic_xformers as vit_model,
         )
     elif "vitl" in ap:
-        from src.models.vision_transformer import vit_large as vit_model
+        from src.models.vision_transformer import vit_large as vit_model  # type: ignore
     else:
-        from src.models.vision_transformer import vit_base as vit_model
+        from src.models.vision_transformer import vit_base as vit_model  # type: ignore
 
     encoder = vit_model(
         img_size=args.img_size,
@@ -426,7 +467,7 @@ def main() -> None:
 
     # Load classifier probe
     logger.info("Loading attentive classifier probe …")
-    from src.models.attentive_pooler import AttentiveClassifier
+    from src.models.attentive_pooler import AttentiveClassifier  # type: ignore
 
     probe_dict = torch.load(
         args.probe_weights, map_location="cpu", weights_only=True

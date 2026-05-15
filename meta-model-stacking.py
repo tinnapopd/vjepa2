@@ -32,12 +32,18 @@ logger.setLevel(logging.INFO)
 
 
 FEATURE_COLUMNS = [
-    "yolo_frame_ratio", # fraction of frames where object is detected
-    "yolo_max_conf", # maximum confidence of the object detection
-    "yolo_avg_conf", # average confidence of the object detection
-    "yolo_std_conf", # standard deviation of the object detection confidence
-    "vjepa_violent_conf", # confidence of violent class
-    "vjepa_conf", # confidence of the predicted class
+    "yolo_frame_ratio",       # fraction of frames where object is detected
+    "yolo_max_conf",          # maximum confidence of the object detection
+    "yolo_std_conf",          # standard deviation of the object detection confidence
+    "yolo_total_detections",  # total bounding box count across all frames
+    "yolo_detection_streak",  # longest consecutive run of frames with detections
+    "yolo_max_box_area",      # largest detected weapon area (normalized by frame)
+    "yolo_conf_ramp",         # confidence trend over time (slope)
+    "vjepa_violent_conf",     # confidence of violent class
+    "vjepa_conf",             # confidence of the predicted class
+    "vjepa_entropy",          # prediction entropy (uncertainty)
+    "vjepa_logit_margin",     # gap between top-2 class logits
+    "yolo_x_vjepa_agreement", # both models agree on violence
 ]
 
 
@@ -49,33 +55,60 @@ def run_yolo_on_clip(
     total = len(frames)
     det_count = 0
     max_conf = 0.0
-    conf_sum = 0.0
-    all_confs = []
+    all_confs: list[float] = []
+    total_boxes = 0
+    max_box_area = 0.0
+    frame_hits: list[bool] = []
+
     for frame in frames:
+        frame_h, frame_w = frame.shape[:2]
+        frame_area = frame_h * frame_w
         results = yolo_model.predict(frame, verbose=False, conf=threshold)
         frame_max = 0.0
         hit = False
         for r in results:
             if r.boxes is not None and len(r.boxes) > 0:
                 hit = True
+                total_boxes += len(r.boxes)
                 c = float(r.boxes.conf.max())
                 frame_max = max(frame_max, c)
+                for box in r.boxes.xyxy:
+                    x1, y1, x2, y2 = box
+                    area = float((x2 - x1) * (y2 - y1)) / frame_area
+                    max_box_area = max(max_box_area, area)
+        frame_hits.append(hit)
         if hit:
             det_count += 1
             max_conf = max(max_conf, frame_max)
-            conf_sum += frame_max
             all_confs.append(frame_max)
 
-    avg_conf = conf_sum / det_count if det_count else 0.0
     std_conf = float(np.std(all_confs)) if all_confs else 0.0
     frame_ratio = det_count / total if total else 0.0
+
+    # Longest consecutive detection streak
+    streak, max_streak = 0, 0
+    for h in frame_hits:
+        if h:
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    # Confidence ramp (slope of per-frame max conf over time)
+    conf_ramp = 0.0
+    if len(all_confs) >= 3:
+        x = np.arange(len(all_confs), dtype=np.float64)
+        conf_ramp = float(np.polyfit(x, all_confs, 1)[0])
 
     return {
         "yolo_frame_count": det_count,
         "yolo_frame_ratio": frame_ratio,
         "yolo_max_conf": max_conf,
-        "yolo_avg_conf": avg_conf,
         "yolo_std_conf": std_conf,
+        "yolo_total_detections": total_boxes,
+        "yolo_detection_streak": max_streak,
+        "yolo_max_box_area": max_box_area,
+        "yolo_conf_ramp": conf_ramp,
     }
 
 
@@ -114,14 +147,24 @@ def run_vjepa_on_clip(
         probs = F.softmax(logits[0], dim=0)
         label = int(logits.argmax(dim=1).item())
 
-    result: Dict[str, float] = {
+        # Prediction entropy (uncertainty measure)
+        entropy = -float((probs * torch.log(probs + 1e-8)).sum())
+
+        # Logit margin (gap between top-2 class logits)
+        top2 = torch.topk(logits[0], k=min(2, logits.shape[1]))
+        margin = (
+            float(top2.values[0] - top2.values[1])
+            if logits.shape[1] >= 2
+            else 0.0
+        )
+
+    return {
         "vjepa_label": float(label),
         "vjepa_conf": float(probs[label].item()),
         "vjepa_violent_conf": float(probs[positive_idx].item()),
+        "vjepa_entropy": entropy,
+        "vjepa_logit_margin": margin,
     }
-    for i in range(probs.shape[0]):
-        result[f"vjepa_prob_cls{i}"] = float(probs[i].item())
-    return result
 
 
 def parse_dataset_csv(csv_path: str) -> List[Tuple[str, int]]:
@@ -176,10 +219,6 @@ def collect_clip_features_from_csv(
     metadata = []
 
     feat_cols = list(FEATURE_COLUMNS)
-    for i in range(num_classes):
-        col = f"vjepa_prob_cls{i}"
-        if col not in feat_cols:
-            feat_cols.append(col)
 
     for vi, (vp, video_label) in enumerate(entries):
         gt = 1 if video_label == positive_idx else 0
@@ -223,6 +262,11 @@ def collect_clip_features_from_csv(
             )
 
             merged = {**yr, **vr}
+            # Cross-model agreement
+            yolo_says = 1.0 if merged["yolo_frame_ratio"] > 0 else 0.0
+            vjepa_says = 1.0 if merged["vjepa_violent_conf"] > 0.5 else 0.0
+            merged["yolo_x_vjepa_agreement"] = yolo_says * vjepa_says
+
             feat_vec = [merged.get(c, 0.0) for c in feat_cols]
 
             all_features.append(feat_vec)
@@ -638,10 +682,6 @@ def main() -> None:
 
     # Build feature column names
     feat_cols = list(FEATURE_COLUMNS)
-    for i in range(num_classes):
-        col = f"vjepa_prob_cls{i}"
-        if col not in feat_cols:
-            feat_cols.append(col)
 
     # Train and evaluate meta-models
     logger.info("Training meta-models with OOF cross-validation …")
