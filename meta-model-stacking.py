@@ -32,13 +32,12 @@ logger.setLevel(logging.INFO)
 
 
 FEATURE_COLUMNS = [
-    "yolo_frame_count",
-    "yolo_frame_ratio",
-    "yolo_max_conf",
-    "yolo_avg_conf",
-    "yolo_std_conf",
-    "vjepa_violent_conf",
-    "vjepa_conf",
+    "yolo_frame_ratio", # fraction of frames where object is detected
+    "yolo_max_conf", # maximum confidence of the object detection
+    "yolo_avg_conf", # average confidence of the object detection
+    "yolo_std_conf", # standard deviation of the object detection confidence
+    "vjepa_violent_conf", # confidence of violent class
+    "vjepa_conf", # confidence of the predicted class
 ]
 
 
@@ -115,13 +114,11 @@ def run_vjepa_on_clip(
         probs = F.softmax(logits[0], dim=0)
         label = int(logits.argmax(dim=1).item())
 
-    # Return all class probabilities as features
     result: Dict[str, float] = {
         "vjepa_label": float(label),
         "vjepa_conf": float(probs[label].item()),
         "vjepa_violent_conf": float(probs[positive_idx].item()),
     }
-    # Add all per-class probabilities as separate features
     for i in range(probs.shape[0]):
         result[f"vjepa_prob_cls{i}"] = float(probs[i].item())
     return result
@@ -129,12 +126,16 @@ def run_vjepa_on_clip(
 
 def parse_dataset_csv(csv_path: str) -> List[Tuple[str, int]]:
     entries: List[Tuple[str, int]] = []
+    csv_dir = os.path.dirname(os.path.abspath(csv_path))
     with open(csv_path, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            parts = line.rsplit(" ", 1)
+            if "," in line:
+                parts = line.rsplit(",", 1)
+            else:
+                parts = line.rsplit(" ", 1)
             if len(parts) != 2:
                 continue
             video_path = parts[0].strip()
@@ -142,6 +143,10 @@ def parse_dataset_csv(csv_path: str) -> List[Tuple[str, int]]:
                 label = int(parts[1].strip())
             except ValueError:
                 continue
+            if not os.path.isabs(video_path):
+                video_path = os.path.normpath(
+                    os.path.join(csv_dir, video_path)
+                )
             entries.append((video_path, label))
     return entries
 
@@ -170,7 +175,6 @@ def collect_clip_features_from_csv(
     all_labels = []
     metadata = []
 
-    # Build dynamic feature list including per-class vjepa probs
     feat_cols = list(FEATURE_COLUMNS)
     for i in range(num_classes):
         col = f"vjepa_prob_cls{i}"
@@ -178,7 +182,6 @@ def collect_clip_features_from_csv(
             feat_cols.append(col)
 
     for vi, (vp, video_label) in enumerate(entries):
-        # Map CSV label to binary: positive_idx -> 1, else -> 0
         gt = 1 if video_label == positive_idx else 0
 
         logger.info(f"  [{vi + 1}/{len(entries)}] {vp} (label={video_label})")
@@ -210,7 +213,6 @@ def collect_clip_features_from_csv(
             if len(bgr) < num_frames:
                 break
 
-            # Run both models
             yr = run_yolo_on_clip(bgr, yolo_model, yolo_threshold)
             vr = run_vjepa_on_clip(
                 rgb,
@@ -220,7 +222,6 @@ def collect_clip_features_from_csv(
                 device,
             )
 
-            # Build feature vector
             merged = {**yr, **vr}
             feat_vec = [merged.get(c, 0.0) for c in feat_cols]
 
@@ -322,8 +323,7 @@ def train_and_evaluate_stacking(
 
     results = {}
 
-    # Baselines: YOLO-only and V-JEPA-only
-    yolo_pred = (X[:, FEATURE_COLUMNS.index("yolo_frame_count")] > 0).astype(
+    yolo_pred = (X[:, FEATURE_COLUMNS.index("yolo_frame_ratio")] > 0).astype(
         int
     )
     results["YOLO_only"] = {
@@ -331,7 +331,6 @@ def train_and_evaluate_stacking(
         "predictions": yolo_pred.tolist(),
     }
 
-    # V-JEPA-only baseline: positive if violent_conf > 0.5
     vjepa_pred = (
         X[:, FEATURE_COLUMNS.index("vjepa_violent_conf")] > 0.5
     ).astype(int)
@@ -340,7 +339,6 @@ def train_and_evaluate_stacking(
         "predictions": vjepa_pred.tolist(),
     }
 
-    # OOF meta-model training
     for name, model in meta_models.items():
         logger.info(f"Training meta-model: {name} ({n_splits}-fold OOF)")
         try:
@@ -349,10 +347,8 @@ def train_and_evaluate_stacking(
             )
             metrics = compute_eval_metrics(y, oof_preds)
 
-            # Fit final model on all data for saving
             model.fit(X, y)
 
-            # Feature importances (if available)
             importances = None
             if hasattr(model, "feature_importances_"):
                 importances = model.feature_importances_.tolist()
@@ -384,11 +380,9 @@ def evaluate_on_val(
     y_val: np.ndarray,
 ) -> Dict[str, Any]:
     """Evaluate all trained meta-models on a held-out validation set."""
-    # YOLO-only baseline
-    yolo_pred = (X_val[:, FEATURE_COLUMNS.index("yolo_frame_count")] > 0).astype(int)
+    yolo_pred = (X_val[:, FEATURE_COLUMNS.index("yolo_frame_ratio")] > 0).astype(int)
     results["YOLO_only"]["val_metrics"] = compute_eval_metrics(y_val, yolo_pred)
 
-    # V-JEPA-only baseline
     vjepa_pred = (X_val[:, FEATURE_COLUMNS.index("vjepa_violent_conf")] > 0.5).astype(int)
     results["VJEPA_only"]["val_metrics"] = compute_eval_metrics(y_val, vjepa_pred)
 
@@ -481,7 +475,6 @@ def print_comparison_table(
                 has_m, key=lambda k: results[k]["metrics"].get("f1", 0)
             )
 
-    # Feature importances for the best model
     if best_name and "feature_importances" in results.get(best_name, {}):
         imps = results[best_name]["feature_importances"]
         if imps is not None:
@@ -541,7 +534,6 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    # Validate dataset CSVs
     if not os.path.isfile(args.dataset_csv):
         raise SystemExit(f"Error: CSV not found: {args.dataset_csv}")
 
@@ -555,7 +547,7 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    # --- Load V-JEPA encoder ---
+    # Load V-JEPA encoder
     logger.info("Loading V-JEPA 2.1 encoder …")
     wb = os.path.basename(args.encoder_weights).lower()
     wp = wb.split("_")
@@ -591,7 +583,7 @@ def main() -> None:
     encoder.load_state_dict(pd_, strict=False)
     encoder.to(device).eval()
 
-    # --- Load classifier probe ---
+    # Load classifier probe
     logger.info("Loading attentive classifier probe …")
 
     probe_dict = torch.load(
@@ -622,11 +614,11 @@ def main() -> None:
     classifier.load_state_dict(probe_dict, strict=False)
     classifier.to(device).eval()
 
-    # --- Load YOLO ---
+    # Load YOLO
     logger.info("Loading YOLOv26 weapon detector …")
     yolo_model = YOLO(args.yolo26_checkpoint)
 
-    # --- Step 1: Collect features from all clips ---
+    # Collect features from all clips
     logger.info("Collecting per-clip features …")
     t0 = time.time()
     X, y, metadata = collect_clip_features_from_csv(
@@ -644,14 +636,14 @@ def main() -> None:
     collect_time = time.time() - t0
     logger.info(f"Feature collection done in {collect_time:.1f}s")
 
-    # Build feature column names (dynamic based on num_classes)
+    # Build feature column names
     feat_cols = list(FEATURE_COLUMNS)
     for i in range(num_classes):
         col = f"vjepa_prob_cls{i}"
         if col not in feat_cols:
             feat_cols.append(col)
 
-    # --- Step 2: Train & evaluate meta-models ---
+    # Train and evaluate meta-models
     logger.info("Training meta-models with OOF cross-validation …")
     t1 = time.time()
     results = train_and_evaluate_stacking(
@@ -661,7 +653,7 @@ def main() -> None:
     )
     train_time = time.time() - t1
 
-    # --- Step 2b: Evaluate on validation set ---
+    # Evaluate on validation set
     val_time = 0.0
     if has_val:
         logger.info("Collecting val-set features …")
@@ -682,10 +674,10 @@ def main() -> None:
         results = evaluate_on_val(results, X_val, y_val)
         val_time = time.time() - tv
 
-    # --- Step 3: Print results ---
+    # Print results
     print_comparison_table(results, feat_cols, has_val=has_val)
 
-    # --- Step 4: Save best model (by val F1 if available, else OOF F1) ---
+    # Save best model
     meta_only = {
         k: v
         for k, v in results.items()
@@ -719,8 +711,7 @@ def main() -> None:
             f"Best meta-model ({best_name}) saved to: {args.save_model}"
         )
 
-    # --- Step 5: Save reports ---
-    # Strip non-serializable model instances
+    # Save reports
     serializable = {}
     for k, v in results.items():
         entry = {kk: vv for kk, vv in v.items() if kk != "model_instance"}

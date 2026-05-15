@@ -1,20 +1,3 @@
-"""Meta-Model Inference: Test a trained meta-learner on a new dataset.
-
-Loads a saved meta_model.pkl (from meta-model-stacking.py), extracts
-V-JEPA + YOLO features from every clip in the test dataset, and runs
-the meta-learner to produce predictions and evaluation metrics.
-
-Usage:
-    python meta-model-inference.py \
-        --test-dataset /tf/data/test-dataset \
-        --meta-model meta_model.pkl \
-        --encoder_weights pretrained-models/vjepa2_1_vitG_384.pt \
-        --probe_weights trained-probes/vitG-probe.pt \
-        --yolo26-checkpoint trained-models/yolo26m-weapon-det.pt
-"""
-
-from __future__ import annotations
-
 import argparse
 import csv
 import glob
@@ -40,11 +23,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-# ---------------------------------------------------------------------------
-# Helpers (same as meta-model-stacking.py)
-# ---------------------------------------------------------------------------
 
 
 def load_labels(csv_path: str) -> List[Tuple[float, float]]:
@@ -76,11 +54,6 @@ def find_videos(directory: str) -> List[str]:
     for ext in ("*.mp4", "*.avi"):
         vids.extend(glob.glob(os.path.join(directory, ext)))
     return sorted(vids)
-
-
-# ---------------------------------------------------------------------------
-# Feature extraction (mirrors meta-model-stacking.py exactly)
-# ---------------------------------------------------------------------------
 
 
 def run_yolo_on_clip(
@@ -263,11 +236,6 @@ def collect_clip_features(
     return X, y, metadata
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
-
-
 def compute_eval_metrics(
     y_true: np.ndarray, y_pred: np.ndarray
 ) -> Dict[str, Any]:
@@ -326,7 +294,6 @@ def print_results(
             f"{m['specificity']:>6.3f}"
         )
 
-    # Improvement summary
     meta_f1 = meta_metrics["f1"]
     yolo_f1 = yolo_metrics["f1"]
     vjepa_f1 = vjepa_metrics["f1"]
@@ -336,14 +303,14 @@ def print_results(
     print("-" * 78)
     if improvement > 0:
         print(
-            f"  ✅ Meta-model improves F1 by {improvement:.4f} "
+            f"  Meta-model improves F1 by {improvement:.4f} "
             f"over best single model"
         )
     elif improvement == 0:
-        print("  ➖ Meta-model matches best single model")
+        print("  Meta-model matches best single model")
     else:
         print(
-            f"  ⚠️  Meta-model is {abs(improvement):.4f} F1 worse "
+            f"  Meta-model is {abs(improvement):.4f} F1 worse "
             f"than best single model"
         )
 
@@ -351,14 +318,9 @@ def print_results(
         min(yolo_metrics["fp"], vjepa_metrics["fp"]) - meta_metrics["fp"]
     )
     if fp_saved > 0:
-        print(f"  ✅ Meta-model saves {fp_saved} false positive(s)")
+        print(f"  Meta-model saves {fp_saved} false positive(s)")
 
     print("=" * 78 + "\n")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -401,7 +363,7 @@ def main() -> None:
     p.add_argument("--output-csv", type=str, default="inference_clips.csv")
     args = p.parse_args()
 
-    # --- Load meta-model ---
+    # Load meta-model
     logger.info(f"Loading meta-model from: {args.meta_model}")
     with open(args.meta_model, "rb") as f:
         saved = pickle.load(f)
@@ -409,7 +371,7 @@ def main() -> None:
     meta_clf = saved["model"]
     model_name = saved["model_name"]
     feature_columns = saved["feature_columns"]
-    train_metrics = saved["metrics"]
+    train_metrics = saved["train_metrics"]
     logger.info(
         f"Loaded {model_name} — "
         f"train F1={train_metrics['f1']}, "
@@ -426,7 +388,7 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    # --- Load V-JEPA encoder ---
+    # Load V-JEPA encoder
     logger.info("Loading V-JEPA 2.1 encoder …")
     wb = os.path.basename(args.encoder_weights).lower()
     wp = wb.split("_")
@@ -462,7 +424,7 @@ def main() -> None:
     encoder.load_state_dict(pd_, strict=False)
     encoder.to(device).eval()
 
-    # --- Load classifier probe ---
+    # Load classifier probe
     logger.info("Loading attentive classifier probe …")
     from src.models.attentive_pooler import AttentiveClassifier
 
@@ -491,11 +453,11 @@ def main() -> None:
     classifier.load_state_dict(probe_dict, strict=False)
     classifier.to(device).eval()
 
-    # --- Load YOLO ---
+    # Load YOLO
     logger.info("Loading YOLOv26 weapon detector …")
     yolo_model = YOLO(args.yolo26_checkpoint)
 
-    # --- Extract features from test dataset ---
+    # Extract features from test dataset
     logger.info("Extracting features from test dataset …")
     t0 = time.time()
     X, y, metadata = collect_clip_features(
@@ -519,7 +481,7 @@ def main() -> None:
     if len(y) == 0:
         raise SystemExit("Error: no clips extracted from test dataset.")
 
-    # --- Run meta-model predictions ---
+    # Run meta-model predictions
     logger.info("Running meta-model predictions …")
     meta_pred = meta_clf.predict(X)
     meta_proba = None
@@ -528,8 +490,8 @@ def main() -> None:
 
     meta_metrics = compute_eval_metrics(y, meta_pred)
 
-    # --- Baselines ---
-    yolo_fc_idx = feature_columns.index("yolo_frame_count")
+    # Baselines
+    yolo_fc_idx = feature_columns.index("yolo_frame_ratio")
     yolo_pred = (X[:, yolo_fc_idx] > 0).astype(int)
     yolo_metrics = compute_eval_metrics(y, yolo_pred)
 
@@ -537,10 +499,9 @@ def main() -> None:
     vjepa_pred = (X[:, vjepa_vc_idx] > 0.5).astype(int)
     vjepa_metrics = compute_eval_metrics(y, vjepa_pred)
 
-    # --- Print results ---
     print_results(meta_metrics, yolo_metrics, vjepa_metrics, model_name)
 
-    # --- Annotate metadata with predictions ---
+    # Annotate metadata with predictions
     for i, clip in enumerate(metadata):
         clip["meta_pred"] = int(meta_pred[i])
         clip["yolo_pred"] = int(yolo_pred[i])
@@ -559,7 +520,7 @@ def main() -> None:
         else:
             clip["meta_outcome"] = "FN"
 
-    # --- Save reports ---
+    # Save reports
     report = {
         "config": {
             "test_dataset": os.path.abspath(args.test_dataset),
