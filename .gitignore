@@ -39,6 +39,8 @@ pretrained-models/*
 !pretrained-models/.gitkeep
 trained-probes/*
 !trained-probes/.gitkeep
+yolo26*.pt
+*.pkl
 
 # Dataset
 data/*
