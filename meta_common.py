@@ -374,11 +374,14 @@ def extract_yolo_cls_embeddings(
 ) -> np.ndarray:
     frame_embeds = []
     for frame in frames:
-        # embed=[-2] extracts from the penultimate layer
+        # embed=[-2] extracts from the penultimate layer.
+        # Ultralytics returns raw Tensors (not Results) when embed is set.
         results = cls_model.predict(frame, verbose=False, embed=[-2])
         for r in results:
-            if hasattr(r, "embeddings") and r.embeddings is not None:
-                # r.embeddings is a list of tensors; take the first
+            if isinstance(r, torch.Tensor):
+                emb = r.cpu().numpy().flatten()
+                frame_embeds.append(emb)
+            elif hasattr(r, "embeddings") and r.embeddings is not None:
                 emb = r.embeddings[0]
                 if hasattr(emb, "cpu"):
                     emb = emb.cpu().numpy()
