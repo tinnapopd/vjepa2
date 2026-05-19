@@ -25,9 +25,6 @@ from src.models.vision_transformer import vit_gigantic_xformers  # type: ignore
 logger = logging.getLogger(__name__)
 
 
-# CLI args
-
-
 def add_shared_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--encoder_weight",
@@ -328,7 +325,7 @@ def extract_yolo_cls_embeddings(
     cls_model: YOLO,
     pool: str = "avg",
 ) -> np.ndarray:
-    frame_embeds: List[np.ndarray] = []
+    frame_embeds = []
     for frame in frames:
         # embed=[-2] extracts from the penultimate layer
         results = cls_model.predict(frame, verbose=False, embed=[-2])
@@ -380,14 +377,10 @@ def extract_embedding_features(
     return np.concatenate(parts)
 
 
-# Per-clip pipeline + output
-
-
 def collect_clip_features(
     video_entries: Iterable[Tuple[str, Any]],
     models: PipelineModels,
     device: str,
-    *,
     num_frames: int,
     frame_step: int,
     human_threshold: float,
@@ -395,9 +388,9 @@ def collect_clip_features(
     label_fn: Callable[[Any, float, float], int],
     metadata_fn: Callable[[str, Any, float, float, int], Dict[str, Any]],
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
-    all_features: List[np.ndarray] = []
-    all_labels: List[int] = []
-    metadata: List[Dict[str, Any]] = []
+    all_features = []
+    all_labels = []
+    metadata = []
     skipped_no_human = 0
 
     for vp, ctx in video_entries:

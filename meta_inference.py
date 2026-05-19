@@ -90,7 +90,10 @@ def collect_embeddings(
     weapon_threshold: float = 0.41,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
     def video_entries() -> Iterator[Tuple[str, Dict[str, Any]]]:
-        for folder, is_pos_folder in [("violent", True), ("non-violent", False)]:
+        for folder, is_pos_folder in [
+            ("violent", True),
+            ("non-violent", False),
+        ]:
             vdir = os.path.join(dataset_dir, folder, "videos")
             ldir = os.path.join(dataset_dir, folder, "labels")
             if not os.path.isdir(vdir):
@@ -102,12 +105,15 @@ def collect_embeddings(
                 vname = os.path.relpath(vp, dataset_dir)
                 logger.info(f"  [{vi + 1}/{len(vpaths)}] {vname}")
                 lpath = os.path.join(ldir, f"{Path(vp).stem}.csv")
-                yield vp, {
-                    "folder": folder,
-                    "is_pos_folder": is_pos_folder,
-                    "labels": load_labels(lpath),
-                    "vname": vname,
-                }
+                yield (
+                    vp,
+                    {
+                        "folder": folder,
+                        "is_pos_folder": is_pos_folder,
+                        "labels": load_labels(lpath),
+                        "vname": vname,
+                    },
+                )
 
     def label_fn(ctx: Dict[str, Any], cs: float, ce: float) -> int:
         return (

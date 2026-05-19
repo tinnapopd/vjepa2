@@ -127,11 +127,39 @@ def collect_embeddings_from_csv(
     )
 
 
+def _collect_loss_curve(
+    model: Any,
+    X: np.ndarray,
+    y: np.ndarray,
+) -> List[float]:
+    if isinstance(model, GradientBoostingClassifier):
+        return [
+            float(log_loss(y, proba[:, 1]))
+            for proba in model.staged_predict_proba(X)
+        ]
+    if isinstance(model, XGBClassifier):
+        evals = getattr(model, "evals_result_", None) or {}
+        return [
+            float(v) for v in evals.get("validation_0", {}).get("logloss", [])
+        ]
+    return []
+
+
+def _log_curve(name: str, curve: List[float], every: int) -> None:
+    if every <= 0 or not curve:
+        return
+    n = len(curve)
+    for i, ll in enumerate(curve, start=1):
+        if i % every == 0 or i == n:
+            logger.info(f"    {name} epoch {i}/{n}: train_loss={ll:.4f}")
+
+
 def train_and_evaluate_stacking(
     X: np.ndarray,
     y: np.ndarray,
     n_splits: int = 5,
     random_state: int = 42,
+    log_loss_every: int = 10,
 ) -> Dict[str, Any]:
     pos_count = int(y.sum())
     neg_count = len(y) - pos_count
@@ -183,11 +211,17 @@ def train_and_evaluate_stacking(
             oof_preds = oof_proba.argmax(axis=1)
             metrics = compute_eval_metrics(y, oof_preds)
             oof_logloss = float(log_loss(y, oof_proba[:, 1]))
-            model.fit(X, y)
+            if isinstance(model, XGBClassifier):
+                model.fit(X, y, eval_set=[(X, y)], verbose=False)
+            else:
+                model.fit(X, y)
+            loss_curve = _collect_loss_curve(model, X, y)
+            _log_curve(name, loss_curve, log_loss_every)
 
             results[name] = {
                 "metrics": metrics,
                 "logloss": oof_logloss,
+                "loss_curve": loss_curve,
                 "predictions": oof_preds.tolist(),
                 "model_instance": model,
             }
@@ -215,15 +249,12 @@ def evaluate_on_val(
 
         model = entry["model_instance"]
         try:
-            val_proba = model.predict_proba(X_val)
-            val_preds = val_proba.argmax(axis=1)
+            val_preds = model.predict(X_val)
             entry["val_metrics"] = compute_eval_metrics(y_val, val_preds)
-            entry["val_logloss"] = float(log_loss(y_val, val_proba[:, 1]))
             vm = entry["val_metrics"]
             logger.info(
                 f"  {name} val: F1={vm['f1']:.4f}  "
-                f"Prec={vm['precision']:.4f}  Rec={vm['recall']:.4f}  "
-                f"LogLoss={entry['val_logloss']:.4f}"
+                f"Prec={vm['precision']:.4f}  Rec={vm['recall']:.4f}"
             )
         except Exception as e:
             logger.error(f"  {name} val failed: {e}")
@@ -323,6 +354,13 @@ def main() -> None:
         help="PCA components (0 = no PCA, use raw embeddings)",
     )
     p.add_argument("--n-folds", type=int, default=5)
+    p.add_argument(
+        "--log-loss-every",
+        type=int,
+        default=10,
+        help="Log per-iteration train logloss every N iters "
+        "(GradientBoosting/XGBoost only; 0 = off)",
+    )
     p.add_argument("--output", type=str, default="stacking_report.json")
     p.add_argument("--output-csv", type=str, default="stacking_clips.csv")
     p.add_argument(
@@ -389,6 +427,7 @@ def main() -> None:
         X_train,
         y,
         n_splits=args.n_folds,
+        log_loss_every=args.log_loss_every,
     )
     train_time = time.time() - t1
 
