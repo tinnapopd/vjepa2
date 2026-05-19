@@ -448,9 +448,7 @@ def extract_strategy_features(
         assert encoder is not None, (
             "V-JEPA encoder required for human_vjepa strategy"
         )
-        vjepa_emb = extract_vjepa_embeddings(
-            rgb, encoder, device, pool=True
-        )
+        vjepa_emb = extract_vjepa_embeddings(rgb, encoder, device, pool=True)
         return vjepa_emb.cpu().numpy().astype(np.float32)
 
     elif strategy == PipelineStrategy.HUMAN_YOLO_CLS:
@@ -470,9 +468,7 @@ def extract_strategy_features(
         _, weapon_stats = detect_weapons_in_clip(
             bgr, weapon_model, weapon_threshold
         )
-        weapon_feat = np.array(
-            list(weapon_stats.values()), dtype=np.float32
-        )
+        weapon_feat = np.array(list(weapon_stats.values()), dtype=np.float32)
         return np.concatenate([weapon_feat, yolo_np])
 
     else:  # COMBINED (default / backward-compatible)
