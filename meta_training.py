@@ -344,12 +344,6 @@ def main() -> None:
         default="/tf/data/dataset-2classes/val.csv",
         help="Path to validation CSV (same format).",
     )
-    p.add_argument(
-        "--cls-checkpoint",
-        type=str,
-        default="/tf/data/trained-models/yolo26m-violence-cls/best.pt",
-        help="Path to trained YOLO-CLS violence classifier",
-    )
     add_shared_model_args(p)
     add_strategy_arg(p)
     p.add_argument(
@@ -390,7 +384,7 @@ def main() -> None:
     logger.info(f"Device: {device}")
 
     models = load_pipeline_models(
-        args, device, args.cls_checkpoint, strategy=args.strategy
+        args, device, strategy=args.strategy
     )
 
     # Collect training embeddings
@@ -515,7 +509,7 @@ def main() -> None:
             "dataset_csv": os.path.abspath(args.dataset_csv),
             "val_csv": os.path.abspath(args.val_csv) if has_val else None,
             "strategy": args.strategy.value,
-            "cls_checkpoint": args.cls_checkpoint,
+            "yolo_violence": args.yolo_violence,
             "encoder_weight": args.encoder_weight,
             "probe_weight": args.probe_weight,
             "pca_dim": args.pca_dim,

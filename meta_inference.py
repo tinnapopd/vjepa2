@@ -6,7 +6,7 @@ Usage:
     python meta_inference.py \\
         --test-dataset /tf/data/test-dataset \\
         --meta-model meta_model.pkl \\
-        --cls-checkpoint trained-models/yolo26m-violence-cls/best.pt
+        --yolo_violence trained-models/yolo26m-violence-cls/best.pt
 """
 
 import argparse
@@ -187,12 +187,6 @@ def main() -> None:
         default="meta_model.pkl",
         help="Path to saved meta_model.pkl from meta_training.py",
     )
-    p.add_argument(
-        "--cls-checkpoint",
-        type=str,
-        default="/tf/data/trained-models/yolo26m-violence-cls/best.pt",
-        help="Path to trained YOLO-CLS violence classifier",
-    )
     add_shared_model_args(p)
     add_strategy_arg(p)
     p.add_argument("--output", type=str, default="inference_report.json")
@@ -237,7 +231,7 @@ def main() -> None:
     logger.info(f"Device: {device}")
 
     models = load_pipeline_models(
-        args, device, args.cls_checkpoint, strategy=effective_strategy
+        args, device, strategy=effective_strategy
     )
 
     logger.info("Extracting embeddings from test dataset …")
@@ -274,7 +268,7 @@ def main() -> None:
             "pca_dim": saved.get("pca_dim"),
             "encoder_weight": args.encoder_weight,
             "probe_weight": args.probe_weight,
-            "cls_checkpoint": args.cls_checkpoint,
+            "yolo_violence": args.yolo_violence,
             "num_frames": args.num_frames,
             "frame_step": args.frame_step,
             "device": device,

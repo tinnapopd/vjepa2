@@ -56,7 +56,7 @@ def add_shared_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--yolo_violence",
         type=str,
-        default="/tf/data/pretrained-models/yolo26m-cls.pt",
+        default="/tf/data/trained-models/yolo26m-violence-cls/best.pt",
     )
 
 
@@ -150,10 +150,10 @@ class PipelineModels:
 def load_pipeline_models(
     args: argparse.Namespace,
     device: str,
-    cls_checkpoint: str,
     strategy: Optional[PipelineStrategy] = None,
 ) -> PipelineModels:
     strat = strategy or PipelineStrategy.COMBINED
+    cls_checkpoint = getattr(args, "yolo_violence", None) or ""
     needs_vjepa = strat in (
         PipelineStrategy.HUMAN_VJEPA,
         PipelineStrategy.COMBINED,

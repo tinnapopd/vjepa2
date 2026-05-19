@@ -12,7 +12,7 @@ Strategies evaluated:
 Usage:
     python pipeline_strategy_eval.py \\
         --test-dataset /tf/data/test-dataset \\
-        --cls-checkpoint trained-models/yolo26m-violence-cls/best.pt
+        --yolo_violence trained-models/yolo26m-violence-cls/best.pt
 """
 
 import argparse
@@ -229,12 +229,6 @@ def main() -> None:
         required=True,
         help="Path to test dataset (violent/ + non-violent/ subdirs)",
     )
-    p.add_argument(
-        "--cls-checkpoint",
-        type=str,
-        default="/tf/data/trained-models/yolo26m-violence-cls/best.pt",
-        help="Path to trained YOLO-CLS violence classifier",
-    )
     add_shared_model_args(p)
     p.add_argument("--output", type=str, default="strategy_eval_report.json")
     p.add_argument("--output-csv", type=str, default="strategy_eval_clips.csv")
@@ -254,7 +248,6 @@ def main() -> None:
     models = load_pipeline_models(
         args,
         device,
-        args.cls_checkpoint,
         strategy=PipelineStrategy.COMBINED,
     )
 
@@ -320,7 +313,7 @@ def main() -> None:
     report: Dict[str, Any] = {
         "config": {
             "test_dataset": os.path.abspath(args.test_dataset),
-            "cls_checkpoint": args.cls_checkpoint,
+            "yolo_violence": args.yolo_violence,
             "encoder_weight": args.encoder_weight,
             "num_frames": args.num_frames,
             "frame_step": args.frame_step,
