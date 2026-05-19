@@ -2,6 +2,7 @@ import argparse
 import csv
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import (
     Any,
     Callable,
@@ -56,6 +57,29 @@ def add_shared_model_args(parser: argparse.ArgumentParser) -> None:
         "--yolo_violence",
         type=str,
         default="/tf/data/pretrained-models/yolo26m-cls.pt",
+    )
+
+
+class PipelineStrategy(str, Enum):
+    """Available 2-phase pipeline strategies."""
+
+    HUMAN_VJEPA = "human_vjepa"  # Strategy A
+    HUMAN_YOLO_CLS = "human_yolo_cls"  # Strategy B
+    HUMAN_WEAPON_CLS = "human_weapon_cls"  # Strategy C
+    COMBINED = "combined"  # All features concatenated
+
+
+def add_strategy_arg(parser: argparse.ArgumentParser) -> None:
+    """Register the --strategy CLI argument."""
+    parser.add_argument(
+        "--strategy",
+        type=PipelineStrategy,
+        default=PipelineStrategy.COMBINED,
+        choices=list(PipelineStrategy),
+        help=(
+            "Pipeline strategy: human_vjepa, human_yolo_cls, "
+            "human_weapon_cls, or combined"
+        ),
     )
 
 
@@ -115,46 +139,69 @@ def inspect_probe_metadata(weights_path: str) -> Tuple[int, int]:
 
 @dataclass(frozen=True)
 class PipelineModels:
-    encoder: torch.nn.Module
     num_classes: int
     positive_idx: int
-    cls_model: YOLO
     human_model: YOLO
-    weapon_model: YOLO
+    encoder: Optional[torch.nn.Module] = None
+    cls_model: Optional[YOLO] = None
+    weapon_model: Optional[YOLO] = None
 
 
 def load_pipeline_models(
     args: argparse.Namespace,
     device: str,
     cls_checkpoint: str,
+    strategy: Optional[PipelineStrategy] = None,
 ) -> PipelineModels:
-    logger.info("Loading V-JEPA 2.1 encoder …")
-    encoder = load_vjepa_encoder(
-        args.encoder_weight,
-        img_size=args.img_size,
-        num_frames=args.num_frames,
-        device=device,
+    strat = strategy or PipelineStrategy.COMBINED
+    needs_vjepa = strat in (
+        PipelineStrategy.HUMAN_VJEPA,
+        PipelineStrategy.COMBINED,
+    )
+    needs_cls = strat in (
+        PipelineStrategy.HUMAN_YOLO_CLS,
+        PipelineStrategy.HUMAN_WEAPON_CLS,
+        PipelineStrategy.COMBINED,
+    )
+    needs_weapon = strat in (
+        PipelineStrategy.HUMAN_WEAPON_CLS,
+        PipelineStrategy.COMBINED,
     )
 
     logger.info("Reading probe metadata …")
     num_classes, positive_idx = inspect_probe_metadata(args.probe_weight)
     logger.info(f"{num_classes}-class probe, positive_idx={positive_idx}")
 
-    logger.info(f"Loading YOLO-CLS: {cls_checkpoint} …")
-    cls_model = YOLO(cls_checkpoint)
+    encoder = None
+    if needs_vjepa:
+        logger.info("Loading V-JEPA 2.1 encoder …")
+        encoder = load_vjepa_encoder(
+            args.encoder_weight,
+            img_size=args.img_size,
+            num_frames=args.num_frames,
+            device=device,
+        )
+
+    cls_model = None
+    if needs_cls:
+        logger.info(f"Loading YOLO-CLS: {cls_checkpoint} …")
+        cls_model = YOLO(cls_checkpoint)
 
     logger.info(f"Loading YOLO base (human det): {args.yolo_base} …")
     human_model = YOLO(args.yolo_base)
 
-    logger.info(f"Loading YOLO weapon det: {args.yolo_weapon} …")
-    weapon_model = YOLO(args.yolo_weapon)
+    weapon_model = None
+    if needs_weapon:
+        logger.info(f"Loading YOLO weapon det: {args.yolo_weapon} …")
+        weapon_model = YOLO(args.yolo_weapon)
 
+    logger.info(f"Pipeline strategy: {strat.value}")
     return PipelineModels(
-        encoder=encoder,
         num_classes=num_classes,
         positive_idx=positive_idx,
-        cls_model=cls_model,
         human_model=human_model,
+        encoder=encoder,
+        cls_model=cls_model,
         weapon_model=weapon_model,
     )
 
@@ -377,6 +424,66 @@ def extract_embedding_features(
     return np.concatenate(parts)
 
 
+def extract_strategy_features(
+    strategy: PipelineStrategy,
+    rgb: List[np.ndarray],
+    bgr: List[np.ndarray],
+    encoder: Optional[torch.nn.Module],
+    cls_model: Optional[YOLO],
+    device: str,
+    weapon_model: Optional[YOLO] = None,
+    weapon_threshold: float = 0.41,
+) -> np.ndarray:
+    """Extract features based on the chosen pipeline strategy.
+
+    Strategy A (human_vjepa):      V-JEPA pooled embedding
+    Strategy B (human_yolo_cls):   YOLO-CLS penultimate embedding
+    Strategy C (human_weapon_cls): Weapon stats + YOLO-CLS embedding
+    Combined:                      V-JEPA + YOLO-CLS + weapon stats
+    """
+    if strategy == PipelineStrategy.HUMAN_VJEPA:
+        assert encoder is not None, (
+            "V-JEPA encoder required for human_vjepa strategy"
+        )
+        vjepa_emb = extract_vjepa_embeddings(
+            rgb, encoder, device, pool=True
+        )
+        return vjepa_emb.cpu().numpy().astype(np.float32)
+
+    elif strategy == PipelineStrategy.HUMAN_YOLO_CLS:
+        assert cls_model is not None, (
+            "YOLO-CLS model required for human_yolo_cls strategy"
+        )
+        return extract_yolo_cls_embeddings(bgr, cls_model, pool="mean")
+
+    elif strategy == PipelineStrategy.HUMAN_WEAPON_CLS:
+        assert cls_model is not None, (
+            "YOLO-CLS model required for human_weapon_cls strategy"
+        )
+        assert weapon_model is not None, (
+            "YOLO weapon model required for human_weapon_cls strategy"
+        )
+        yolo_np = extract_yolo_cls_embeddings(bgr, cls_model, pool="mean")
+        _, weapon_stats = detect_weapons_in_clip(
+            bgr, weapon_model, weapon_threshold
+        )
+        weapon_feat = np.array(
+            list(weapon_stats.values()), dtype=np.float32
+        )
+        return np.concatenate([weapon_feat, yolo_np])
+
+    else:  # COMBINED (default / backward-compatible)
+        return extract_embedding_features(
+            rgb,
+            bgr,
+            encoder,
+            cls_model,
+            device,
+            weapon_model=weapon_model,
+            weapon_threshold=weapon_threshold,
+        )
+
+
 def collect_clip_features(
     video_entries: Iterable[Tuple[str, Any]],
     models: PipelineModels,
@@ -387,7 +494,9 @@ def collect_clip_features(
     weapon_threshold: float,
     label_fn: Callable[[Any, float, float], int],
     metadata_fn: Callable[[str, Any, float, float, int], Dict[str, Any]],
+    strategy: Optional[PipelineStrategy] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+    strat = strategy or PipelineStrategy.COMBINED
     all_features = []
     all_labels = []
     metadata = []
@@ -404,7 +513,8 @@ def collect_clip_features(
                 skipped_no_human += 1
                 continue
 
-            emb = extract_embedding_features(
+            emb = extract_strategy_features(
+                strat,
                 rgb,
                 bgr,
                 models.encoder,

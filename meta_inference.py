@@ -19,14 +19,16 @@ import pickle
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
 
 from meta_common import (  # type: ignore
     PipelineModels,
+    PipelineStrategy,
     add_shared_model_args,
+    add_strategy_arg,
     collect_clip_features,
     compute_eval_metrics,
     load_pipeline_models,
@@ -88,6 +90,7 @@ def collect_embeddings(
     frame_step: int,
     human_threshold: float = 0.3,
     weapon_threshold: float = 0.41,
+    strategy: Optional[PipelineStrategy] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
     def video_entries() -> Iterator[Tuple[str, Dict[str, Any]]]:
         for folder, is_pos_folder in [
@@ -144,6 +147,7 @@ def collect_embeddings(
         weapon_threshold=weapon_threshold,
         label_fn=label_fn,
         metadata_fn=metadata_fn,
+        strategy=strategy,
     )
 
 
@@ -190,6 +194,7 @@ def main() -> None:
         help="Path to trained YOLO-CLS violence classifier",
     )
     add_shared_model_args(p)
+    add_strategy_arg(p)
     p.add_argument("--output", type=str, default="inference_report.json")
     p.add_argument("--output-csv", type=str, default="inference_clips.csv")
     args = p.parse_args()
@@ -203,8 +208,20 @@ def main() -> None:
     scaler = saved["scaler"]
     pca = saved.get("pca")
     train_metrics = saved["train_metrics"]
+    saved_strategy = saved.get("strategy", "combined")
+
+    # Validate strategy consistency
+    if args.strategy.value != saved_strategy:
+        logger.warning(
+            f"CLI strategy ({args.strategy.value}) differs from saved "
+            f"model strategy ({saved_strategy}). Using saved: {saved_strategy}"
+        )
+        effective_strategy = PipelineStrategy(saved_strategy)
+    else:
+        effective_strategy = args.strategy
+
     logger.info(
-        f"Loaded {model_name} — "
+        f"Loaded {model_name} (strategy={saved_strategy}) — "
         f"train F1={train_metrics['f1']}, "
         f"raw_dim={saved.get('raw_dim', '?')}, "
         f"final_dim={saved.get('final_dim', '?')}"
@@ -219,7 +236,9 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    models = load_pipeline_models(args, device, args.cls_checkpoint)
+    models = load_pipeline_models(
+        args, device, args.cls_checkpoint, strategy=effective_strategy
+    )
 
     logger.info("Extracting embeddings from test dataset …")
     t0 = time.time()
@@ -231,6 +250,7 @@ def main() -> None:
         frame_step=args.frame_step,
         human_threshold=args.human_threshold,
         weapon_threshold=args.weapon_threshold,
+        strategy=effective_strategy,
     )
     elapsed = time.time() - t0
 
@@ -248,6 +268,7 @@ def main() -> None:
             "test_dataset": os.path.abspath(args.test_dataset),
             "meta_model": args.meta_model,
             "model_name": model_name,
+            "strategy": effective_strategy.value,
             "raw_dim": saved.get("raw_dim"),
             "final_dim": saved.get("final_dim"),
             "pca_dim": saved.get("pca_dim"),

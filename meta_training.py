@@ -20,7 +20,7 @@ import os
 import pickle
 import time
 import warnings
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -37,7 +37,9 @@ from xgboost import XGBClassifier
 
 from meta_common import (  # type: ignore
     PipelineModels,
+    PipelineStrategy,
     add_shared_model_args,
+    add_strategy_arg,
     collect_clip_features,
     compute_eval_metrics,
     load_pipeline_models,
@@ -86,6 +88,7 @@ def collect_embeddings_from_csv(
     frame_step: int,
     human_threshold: float = 0.3,
     weapon_threshold: float = 0.41,
+    strategy: Optional[PipelineStrategy] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
     entries = parse_dataset_csv(csv_path)
     if not entries:
@@ -124,6 +127,7 @@ def collect_embeddings_from_csv(
         weapon_threshold=weapon_threshold,
         label_fn=label_fn,
         metadata_fn=metadata_fn,
+        strategy=strategy,
     )
 
 
@@ -347,6 +351,7 @@ def main() -> None:
         help="Path to trained YOLO-CLS violence classifier",
     )
     add_shared_model_args(p)
+    add_strategy_arg(p)
     p.add_argument(
         "--pca-dim",
         type=int,
@@ -384,10 +389,12 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    models = load_pipeline_models(args, device, args.cls_checkpoint)
+    models = load_pipeline_models(
+        args, device, args.cls_checkpoint, strategy=args.strategy
+    )
 
     # Collect training embeddings
-    logger.info("Collecting per-clip embeddings …")
+    logger.info(f"Collecting per-clip embeddings (strategy={args.strategy.value}) …")
     t0 = time.time()
     X, y, metadata = collect_embeddings_from_csv(
         args.dataset_csv,
@@ -397,6 +404,7 @@ def main() -> None:
         frame_step=args.frame_step,
         human_threshold=args.human_threshold,
         weapon_threshold=args.weapon_threshold,
+        strategy=args.strategy,
     )
     collect_time = time.time() - t0
     logger.info(f"Embedding collection done in {collect_time:.1f}s")
@@ -444,6 +452,7 @@ def main() -> None:
             frame_step=args.frame_step,
             human_threshold=args.human_threshold,
             weapon_threshold=args.weapon_threshold,
+            strategy=args.strategy,
         )
         X_val_scaled = scaler.transform(X_val)
         X_val_final = pca.transform(X_val_scaled) if pca else X_val_scaled
@@ -479,6 +488,7 @@ def main() -> None:
         save_payload: Dict[str, Any] = {
             "model": best_model,
             "model_name": best_name,
+            "strategy": args.strategy.value,
             "scaler": scaler,
             "pca": pca,
             "pca_dim": args.pca_dim,
@@ -504,6 +514,7 @@ def main() -> None:
         "config": {
             "dataset_csv": os.path.abspath(args.dataset_csv),
             "val_csv": os.path.abspath(args.val_csv) if has_val else None,
+            "strategy": args.strategy.value,
             "cls_checkpoint": args.cls_checkpoint,
             "encoder_weight": args.encoder_weight,
             "probe_weight": args.probe_weight,
