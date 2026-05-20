@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+import decord  # type: ignore
 
 import src.datasets.utils.video.transforms as video_transforms  # type: ignore
 import src.datasets.utils.video.volume_transforms as volume_transforms  # type: ignore
@@ -120,9 +121,7 @@ def load_vjepa_encoder(
 
 
 def inspect_probe_metadata(weights_path: str) -> Tuple[int, int]:
-    probe_dict = torch.load(
-        weights_path, map_location="cpu", weights_only=True
-    )
+    probe_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
     if "classifiers" in probe_dict:
         probe_dict = probe_dict["classifiers"][0]
 
@@ -219,34 +218,67 @@ def iter_clips_from_video(
     Stops at the first short read past the end of the video.
     """
     raw_per_clip = num_frames * frame_step
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        logger.warning(f"Cannot open: {video_path}")
-        return
+
+    use_decord = True
     try:
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
+        fps = vr.get_avg_fps() or 30.0
+        total_frames = len(vr)
+    except Exception as e:
+        logger.warning(
+            f"Failed to open {video_path} with decord: {e}. Falling back to OpenCV."
+        )
+        use_decord = False
 
+    if use_decord:
         for cs in range(0, total_frames, raw_per_clip):
-            ce = cs + raw_per_clip - 1
-            if ce >= total_frames:
+            ce = cs + raw_per_clip
+            if ce > total_frames:
+                break
+            indices = list(range(cs, ce, frame_step))
+            try:
+                batch = vr.get_batch(
+                    indices
+                ).asnumpy()  # shape: [num_frames, H, W, C] in RGB
+            except Exception as e:
+                logger.warning(
+                    f"Error reading frames {cs} to {ce} in {video_path}: {e}"
+                )
                 break
 
-            cap.set(cv2.CAP_PROP_POS_FRAMES, cs)
-            bgr, rgb = [], []
-            for off in range(raw_per_clip):
-                ret, frame = cap.read()
-                if not ret:
+            rgb_list = [batch[i] for i in range(num_frames)]
+            bgr_list = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in rgb_list]
+
+            yield bgr_list, rgb_list, cs / fps, (ce - 1) / fps
+    else:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.warning(f"Cannot open: {video_path}")
+            return
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            for cs in range(0, total_frames, raw_per_clip):
+                ce = cs + raw_per_clip - 1
+                if ce >= total_frames:
                     break
-                if off % frame_step == 0:
-                    bgr.append(frame)
-                    rgb.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            if len(bgr) < num_frames:
-                break
 
-            yield bgr, rgb, cs / fps, ce / fps
-    finally:
-        cap.release()
+                cap.set(cv2.CAP_PROP_POS_FRAMES, cs)
+                bgr, rgb = [], []
+                for off in range(raw_per_clip):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    if off % frame_step == 0:
+                        bgr.append(frame)
+                        rgb.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                if len(bgr) < num_frames:
+                    break
+
+                yield bgr, rgb, cs / fps, ce / fps
+        finally:
+            cap.release()
 
 
 # Detectors
@@ -258,25 +290,32 @@ def has_human_in_clip(
     human_threshold: float = 0.3,
     min_human_frames: int = 1,
 ) -> Tuple[bool, Dict[str, float]]:
+    if not frames:
+        return False, {
+            "human_detected": 0.0,
+            "human_frame_ratio": 0.0,
+            "human_max_count": 0.0,
+        }
+
+    results = human_model.predict(
+        frames,
+        verbose=False,
+        conf=human_threshold,
+        classes=[0],
+    )
+
     human_frame_count = 0
     max_humans_in_frame = 0
 
-    for frame in frames:
-        results = human_model.predict(
-            frame,
-            verbose=False,
-            conf=human_threshold,
-            classes=[0],
-        )
+    for r in results:
         count = 0
-        for r in results:
-            if r.boxes is not None and len(r.boxes) > 0:
-                count += len(r.boxes)
+        if r.boxes is not None and len(r.boxes) > 0:
+            count = len(r.boxes)
         if count > 0:
             human_frame_count += 1
             max_humans_in_frame = max(max_humans_in_frame, count)
 
-    total = len(frames) if frames else 1
+    total = len(frames)
     detected = human_frame_count >= min_human_frames
     return detected, {
         "human_detected": 1.0 if detected else 0.0,
@@ -291,30 +330,39 @@ def detect_weapons_in_clip(
     weapon_threshold: float = 0.41,
 ) -> Tuple[bool, Dict[str, float]]:
     """Run weapon detection on clip frames and return stats."""
+    if not frames:
+        return False, {
+            "weapon_detected": 0.0,
+            "weapon_frame_ratio": 0.0,
+            "weapon_max_count": 0.0,
+            "weapon_max_conf": 0.0,
+            "weapon_mean_conf": 0.0,
+        }
+
+    results = weapon_model.predict(
+        frames,
+        verbose=False,
+        conf=weapon_threshold,
+    )
+
     weapon_frame_count = 0
     max_weapons_in_frame = 0
     max_conf = 0.0
     all_confs: List[float] = []
 
-    for frame in frames:
-        results = weapon_model.predict(
-            frame,
-            verbose=False,
-            conf=weapon_threshold,
-        )
+    for r in results:
         count = 0
-        for r in results:
-            if r.boxes is not None and len(r.boxes) > 0:
-                count += len(r.boxes)
-                for box in r.boxes:
-                    c = float(box.conf[0])
-                    all_confs.append(c)
-                    max_conf = max(max_conf, c)
+        if r.boxes is not None and len(r.boxes) > 0:
+            count = len(r.boxes)
+            for box in r.boxes:
+                c = float(box.conf[0])
+                all_confs.append(c)
+                max_conf = max(max_conf, c)
         if count > 0:
             weapon_frame_count += 1
             max_weapons_in_frame = max(max_weapons_in_frame, count)
 
-    total = len(frames) if frames else 1
+    total = len(frames)
     detected = weapon_frame_count > 0
     mean_conf = float(np.mean(all_confs)) if all_confs else 0.0
 
@@ -342,9 +390,7 @@ def extract_vjepa_embeddings(
         frame_list = [frames[i] for i in range(len(frames))]
 
         img_size = 384
-        if hasattr(encoder, "patch_embed") and hasattr(
-            encoder.patch_embed, "img_size"
-        ):
+        if hasattr(encoder, "patch_embed") and hasattr(encoder.patch_embed, "img_size"):
             s = encoder.patch_embed.img_size
             img_size = s[0] if isinstance(s, tuple) else s
 
@@ -372,11 +418,17 @@ def extract_yolo_cls_embeddings(
     cls_model: YOLO,
     pool: str = "avg",
 ) -> np.ndarray:
+    if not frames:
+        logger.warning("No frames provided, returning zeros")
+        return np.zeros(512, dtype=np.float32)
+
+    results = cls_model.predict(frames, verbose=False, embed=[-2])
     frame_embeds = []
-    for frame in frames:
-        # embed=[-2] extracts from the penultimate layer.
-        # Ultralytics returns raw Tensors (not Results) when embed is set.
-        results = cls_model.predict(frame, verbose=False, embed=[-2])
+
+    if isinstance(results, torch.Tensor):
+        for emb in results:
+            frame_embeds.append(emb.cpu().numpy().flatten())
+    elif isinstance(results, list):
         for r in results:
             if isinstance(r, torch.Tensor):
                 emb = r.cpu().numpy().flatten()
@@ -386,6 +438,13 @@ def extract_yolo_cls_embeddings(
                 if hasattr(emb, "cpu"):
                     emb = emb.cpu().numpy()
                 frame_embeds.append(emb.flatten())
+    else:
+        try:
+            for r in results:
+                if isinstance(r, torch.Tensor):
+                    frame_embeds.append(r.cpu().numpy().flatten())
+        except Exception as e:
+            logger.warning(f"Could not iterate over YOLO CLS results: {e}")
 
     if not frame_embeds:
         # Fallback: return zeros if no embeddings could be extracted
@@ -418,9 +477,7 @@ def extract_embedding_features(
 
     # Weapon detection features
     if weapon_model is not None:
-        _, weapon_stats = detect_weapons_in_clip(
-            bgr, weapon_model, weapon_threshold
-        )
+        _, weapon_stats = detect_weapons_in_clip(bgr, weapon_model, weapon_threshold)
         weapon_feat = np.array(list(weapon_stats.values()), dtype=np.float32)
         parts.append(weapon_feat)
 
@@ -445,9 +502,7 @@ def extract_strategy_features(
     Combined:                      V-JEPA + YOLO-CLS + weapon stats
     """
     if strategy == PipelineStrategy.HUMAN_VJEPA:
-        assert encoder is not None, (
-            "V-JEPA encoder required for human_vjepa strategy"
-        )
+        assert encoder is not None, "V-JEPA encoder required for human_vjepa strategy"
         vjepa_emb = extract_vjepa_embeddings(rgb, encoder, device, pool=True)
         return vjepa_emb.cpu().numpy().astype(np.float32)
 
@@ -465,9 +520,7 @@ def extract_strategy_features(
             "YOLO weapon model required for human_weapon_cls strategy"
         )
         yolo_np = extract_yolo_cls_embeddings(bgr, cls_model, pool="mean")
-        _, weapon_stats = detect_weapons_in_clip(
-            bgr, weapon_model, weapon_threshold
-        )
+        _, weapon_stats = detect_weapons_in_clip(bgr, weapon_model, weapon_threshold)
         weapon_feat = np.array(list(weapon_stats.values()), dtype=np.float32)
         return np.concatenate([weapon_feat, yolo_np])
 
@@ -505,9 +558,7 @@ def collect_clip_features(
         for bgr, rgb, cs_sec, ce_sec in iter_clips_from_video(
             vp, num_frames=num_frames, frame_step=frame_step
         ):
-            has_human, _ = has_human_in_clip(
-                bgr, models.human_model, human_threshold
-            )
+            has_human, _ = has_human_in_clip(bgr, models.human_model, human_threshold)
             if not has_human:
                 skipped_no_human += 1
                 continue
@@ -549,9 +600,7 @@ def write_clips_csv(path: str, metadata: List[Dict[str, Any]]) -> None:
         w.writerows(metadata)
 
 
-def compute_eval_metrics(
-    y_true: np.ndarray, y_pred: np.ndarray
-) -> Dict[str, Any]:
+def compute_eval_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
     tp = int(((y_pred == 1) & (y_true == 1)).sum())
     fp = int(((y_pred == 1) & (y_true == 0)).sum())
     tn = int(((y_pred == 0) & (y_true == 0)).sum())
