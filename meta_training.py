@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -78,6 +79,26 @@ def parse_dataset_csv(csv_path: str) -> List[Tuple[str, int]]:
                 )
             entries.append((video_path, label))
     return entries
+
+
+def get_cache_path(
+    csv_path: str,
+    args: argparse.Namespace,
+    prefix: str = "cache",
+) -> Optional[str]:
+    if not args.cache_dir:
+        return None
+    # Create unique parameters representation
+    params_str = (
+        f"strat_{args.strategy.value}_nf_{args.num_frames}_fs_{args.frame_step}_"
+        f"ht_{args.human_threshold}_wt_{args.weapon_threshold}"
+    )
+    # MD5 of absolute CSV path
+    csv_abs = os.path.abspath(csv_path)
+    csv_hash = hashlib.md5(csv_abs.encode("utf-8")).hexdigest()[:8]
+    csv_base = os.path.basename(csv_path).replace(".csv", "")
+    filename = f"{prefix}_{csv_base}_{csv_hash}_{params_str}.pkl"
+    return os.path.join(args.cache_dir, filename)
 
 
 def collect_embeddings_from_csv(
@@ -368,6 +389,17 @@ def main() -> None:
         default="meta_model.pkl",
         help="Path to save the best meta-model (pickle)",
     )
+    p.add_argument(
+        "--cache-dir",
+        type=str,
+        default="cache_features",
+        help="Directory to cache extracted features (empty string to disable)",
+    )
+    p.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Force rebuilding features and ignore existing cache",
+    )
     args = p.parse_args()
 
     if not os.path.isfile(args.dataset_csv):
@@ -388,18 +420,46 @@ def main() -> None:
     )
 
     # Collect training embeddings
-    logger.info(f"Collecting per-clip embeddings (strategy={args.strategy.value}) …")
     t0 = time.time()
-    X, y, metadata = collect_embeddings_from_csv(
-        args.dataset_csv,
-        models,
-        device,
-        num_frames=args.num_frames,
-        frame_step=args.frame_step,
-        human_threshold=args.human_threshold,
-        weapon_threshold=args.weapon_threshold,
-        strategy=args.strategy,
-    )
+    cache_path_train = None
+    loaded_from_cache_train = False
+    if args.cache_dir:
+        os.makedirs(args.cache_dir, exist_ok=True)
+        cache_path_train = get_cache_path(args.dataset_csv, args, prefix="train")
+
+    if cache_path_train and os.path.exists(cache_path_train) and not args.force_rebuild:
+        logger.info(f"Loading training features from cache: {cache_path_train}")
+        try:
+            with open(cache_path_train, "rb") as f:
+                cached_data = pickle.load(f)
+            X, y, metadata = cached_data["X"], cached_data["y"], cached_data["metadata"]
+            loaded_from_cache_train = True
+        except Exception as e:
+            logger.warning(
+                f"Failed to load cache from {cache_path_train}: {e}. "
+                "Extracting features raw."
+            )
+
+    if not loaded_from_cache_train:
+        logger.info(f"Collecting per-clip embeddings (strategy={args.strategy.value}) …")
+        X, y, metadata = collect_embeddings_from_csv(
+            args.dataset_csv,
+            models,
+            device,
+            num_frames=args.num_frames,
+            frame_step=args.frame_step,
+            human_threshold=args.human_threshold,
+            weapon_threshold=args.weapon_threshold,
+            strategy=args.strategy,
+        )
+        if cache_path_train:
+            logger.info(f"Saving training features to cache: {cache_path_train}")
+            try:
+                with open(cache_path_train, "wb") as f:
+                    pickle.dump({"X": X, "y": y, "metadata": metadata}, f)
+            except Exception as e:
+                logger.warning(f"Failed to save cache to {cache_path_train}: {e}")
+
     collect_time = time.time() - t0
     logger.info(f"Embedding collection done in {collect_time:.1f}s")
     logger.info(f"Raw embedding shape: {X.shape}")
@@ -436,18 +496,51 @@ def main() -> None:
     # ── Validation ──
     val_time = 0.0
     if has_val:
-        logger.info("Collecting val-set embeddings …")
         tv = time.time()
-        X_val, y_val, val_metadata = collect_embeddings_from_csv(
-            args.val_csv,
-            models,
-            device,
-            num_frames=args.num_frames,
-            frame_step=args.frame_step,
-            human_threshold=args.human_threshold,
-            weapon_threshold=args.weapon_threshold,
-            strategy=args.strategy,
-        )
+        cache_path_val = None
+        loaded_from_cache_val = False
+        if args.cache_dir:
+            cache_path_val = get_cache_path(args.val_csv, args, prefix="val")
+
+        if cache_path_val and os.path.exists(cache_path_val) and not args.force_rebuild:
+            logger.info(f"Loading validation features from cache: {cache_path_val}")
+            try:
+                with open(cache_path_val, "rb") as f:
+                    cached_data = pickle.load(f)
+                X_val, y_val, val_metadata = (
+                    cached_data["X"],
+                    cached_data["y"],
+                    cached_data["metadata"],
+                )
+                loaded_from_cache_val = True
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load cache from {cache_path_val}: {e}. "
+                    "Extracting features raw."
+                )
+
+        if not loaded_from_cache_val:
+            logger.info("Collecting val-set embeddings …")
+            X_val, y_val, val_metadata = collect_embeddings_from_csv(
+                args.val_csv,
+                models,
+                device,
+                num_frames=args.num_frames,
+                frame_step=args.frame_step,
+                human_threshold=args.human_threshold,
+                weapon_threshold=args.weapon_threshold,
+                strategy=args.strategy,
+            )
+            if cache_path_val:
+                logger.info(f"Saving validation features to cache: {cache_path_val}")
+                try:
+                    with open(cache_path_val, "wb") as f:
+                        pickle.dump(
+                            {"X": X_val, "y": y_val, "metadata": val_metadata}, f
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to save cache to {cache_path_val}: {e}")
+
         X_val_scaled = scaler.transform(X_val)
         X_val_final = pca.transform(X_val_scaled) if pca else X_val_scaled
 
