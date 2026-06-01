@@ -68,7 +68,6 @@ def main() -> None:
             "human_vjepa",
             "human_yolo_cls",
             "human_weapon_cls",
-            "combined",
         ],
         help="Pipeline strategy to train, or 'all' to train all strategies sequentially",
     )
@@ -122,16 +121,15 @@ def main() -> None:
             PipelineStrategy.HUMAN_VJEPA,
             PipelineStrategy.HUMAN_YOLO_CLS,
             PipelineStrategy.HUMAN_WEAPON_CLS,
-            PipelineStrategy.COMBINED,
         ]
     else:
         strategies_to_run = [PipelineStrategy(args.strategy)]
 
     logger.info(f"Strategies to evaluate: {[s.value for s in strategies_to_run]}")
 
-    # Load ALL pipeline models once by asking for COMBINED strategy models
+    # Load ALL pipeline models once (strategy=None loads every model).
     logger.info("Loading all required neural network models onto device once ...")
-    models = load_pipeline_models(args, device, strategy=PipelineStrategy.COMBINED)
+    models = load_pipeline_models(args, device, strategy=None)
 
     comparison_results: Dict[str, Any] = {}
     master_table_rows = []

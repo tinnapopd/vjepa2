@@ -57,7 +57,7 @@ def add_shared_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--yolo_violence",
         type=str,
-        default="/tf/data/trained-models/yolo26m-violence-cls/best.pt",
+        default="/tf/data/yolo-cls-best.pt",
     )
 
 
@@ -67,7 +67,10 @@ class PipelineStrategy(str, Enum):
     HUMAN_VJEPA = "human_vjepa"  # Strategy A
     HUMAN_YOLO_CLS = "human_yolo_cls"  # Strategy B
     HUMAN_WEAPON_CLS = "human_weapon_cls"  # Strategy C
-    COMBINED = "combined"  # All features concatenated
+
+
+# Default strategy when none is specified on the CLI or by a saved model.
+DEFAULT_STRATEGY = PipelineStrategy.HUMAN_WEAPON_CLS
 
 
 def add_strategy_arg(parser: argparse.ArgumentParser) -> None:
@@ -75,11 +78,11 @@ def add_strategy_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--strategy",
         type=PipelineStrategy,
-        default=PipelineStrategy.COMBINED,
+        default=DEFAULT_STRATEGY,
         choices=list(PipelineStrategy),
         help=(
             "Pipeline strategy: human_vjepa, human_yolo_cls, "
-            "human_weapon_cls, or combined"
+            "or human_weapon_cls"
         ),
     )
 
@@ -121,7 +124,9 @@ def load_vjepa_encoder(
 
 
 def inspect_probe_metadata(weights_path: str) -> Tuple[int, int]:
-    probe_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+    probe_dict = torch.load(
+        weights_path, map_location="cpu", weights_only=True
+    )
     if "classifiers" in probe_dict:
         probe_dict = probe_dict["classifiers"][0]
 
@@ -151,21 +156,15 @@ def load_pipeline_models(
     device: str,
     strategy: Optional[PipelineStrategy] = None,
 ) -> PipelineModels:
-    strat = strategy or PipelineStrategy.COMBINED
     cls_checkpoint = getattr(args, "yolo_violence", None) or ""
-    needs_vjepa = strat in (
-        PipelineStrategy.HUMAN_VJEPA,
-        PipelineStrategy.COMBINED,
-    )
-    needs_cls = strat in (
+    # strategy=None → load every model (used when running multiple strategies).
+    load_all = strategy is None
+    needs_vjepa = load_all or strategy == PipelineStrategy.HUMAN_VJEPA
+    needs_cls = load_all or strategy in (
         PipelineStrategy.HUMAN_YOLO_CLS,
         PipelineStrategy.HUMAN_WEAPON_CLS,
-        PipelineStrategy.COMBINED,
     )
-    needs_weapon = strat in (
-        PipelineStrategy.HUMAN_WEAPON_CLS,
-        PipelineStrategy.COMBINED,
-    )
+    needs_weapon = load_all or strategy == PipelineStrategy.HUMAN_WEAPON_CLS
 
     logger.info("Reading probe metadata …")
     num_classes, positive_idx = inspect_probe_metadata(args.probe_weight)
@@ -194,7 +193,9 @@ def load_pipeline_models(
         logger.info(f"Loading YOLO weapon det: {args.yolo_weapon} …")
         weapon_model = YOLO(args.yolo_weapon)
 
-    logger.info(f"Pipeline strategy: {strat.value}")
+    logger.info(
+        f"Pipeline strategy: {strategy.value if strategy else 'all (loaded every model)'}"
+    )
     return PipelineModels(
         num_classes=num_classes,
         positive_idx=positive_idx,
@@ -247,7 +248,9 @@ def iter_clips_from_video(
                 break
 
             rgb_list = [batch[i] for i in range(num_frames)]
-            bgr_list = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in rgb_list]
+            bgr_list = [
+                cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in rgb_list
+            ]
 
             yield bgr_list, rgb_list, cs / fps, (ce - 1) / fps
     else:
@@ -390,7 +393,9 @@ def extract_vjepa_embeddings(
         frame_list = [frames[i] for i in range(len(frames))]
 
         img_size = 384
-        if hasattr(encoder, "patch_embed") and hasattr(encoder.patch_embed, "img_size"):
+        if hasattr(encoder, "patch_embed") and hasattr(
+            encoder.patch_embed, "img_size"
+        ):
             s = encoder.patch_embed.img_size
             img_size = s[0] if isinstance(s, tuple) else s
 
@@ -457,33 +462,6 @@ def extract_yolo_cls_embeddings(
     return stacked.mean(axis=0).astype(np.float32)
 
 
-def extract_embedding_features(
-    rgb: List[np.ndarray],
-    bgr: List[np.ndarray],
-    encoder: torch.nn.Module,
-    cls_model: YOLO,
-    device: str,
-    weapon_model: Optional[YOLO] = None,
-    weapon_threshold: float = 0.41,
-) -> np.ndarray:
-    # V-JEPA embedding (pooled)
-    vjepa_emb = extract_vjepa_embeddings(rgb, encoder, device, pool=True)
-    vjepa_np = vjepa_emb.cpu().numpy().astype(np.float32)
-
-    # YOLO-CLS embedding (pooled across frames)
-    yolo_np = extract_yolo_cls_embeddings(bgr, cls_model, pool="mean")
-
-    parts = [vjepa_np, yolo_np]
-
-    # Weapon detection features
-    if weapon_model is not None:
-        _, weapon_stats = detect_weapons_in_clip(bgr, weapon_model, weapon_threshold)
-        weapon_feat = np.array(list(weapon_stats.values()), dtype=np.float32)
-        parts.append(weapon_feat)
-
-    return np.concatenate(parts)
-
-
 def extract_strategy_features(
     strategy: PipelineStrategy,
     rgb: List[np.ndarray],
@@ -499,10 +477,11 @@ def extract_strategy_features(
     Strategy A (human_vjepa):      V-JEPA pooled embedding
     Strategy B (human_yolo_cls):   YOLO-CLS penultimate embedding
     Strategy C (human_weapon_cls): Weapon stats + YOLO-CLS embedding
-    Combined:                      V-JEPA + YOLO-CLS + weapon stats
     """
     if strategy == PipelineStrategy.HUMAN_VJEPA:
-        assert encoder is not None, "V-JEPA encoder required for human_vjepa strategy"
+        assert encoder is not None, (
+            "V-JEPA encoder required for human_vjepa strategy"
+        )
         vjepa_emb = extract_vjepa_embeddings(rgb, encoder, device, pool=True)
         return vjepa_emb.cpu().numpy().astype(np.float32)
 
@@ -520,20 +499,14 @@ def extract_strategy_features(
             "YOLO weapon model required for human_weapon_cls strategy"
         )
         yolo_np = extract_yolo_cls_embeddings(bgr, cls_model, pool="mean")
-        _, weapon_stats = detect_weapons_in_clip(bgr, weapon_model, weapon_threshold)
+        _, weapon_stats = detect_weapons_in_clip(
+            bgr, weapon_model, weapon_threshold
+        )
         weapon_feat = np.array(list(weapon_stats.values()), dtype=np.float32)
         return np.concatenate([weapon_feat, yolo_np])
 
-    else:  # COMBINED (default / backward-compatible)
-        return extract_embedding_features(
-            rgb,
-            bgr,
-            encoder,
-            cls_model,
-            device,
-            weapon_model=weapon_model,
-            weapon_threshold=weapon_threshold,
-        )
+    else:
+        raise ValueError(f"Unknown pipeline strategy: {strategy}")
 
 
 def collect_clip_features(
@@ -548,7 +521,7 @@ def collect_clip_features(
     metadata_fn: Callable[[str, Any, float, float, int], Dict[str, Any]],
     strategy: Optional[PipelineStrategy] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
-    strat = strategy or PipelineStrategy.COMBINED
+    strat = strategy or DEFAULT_STRATEGY
     all_features = []
     all_labels = []
     metadata = []
@@ -558,7 +531,9 @@ def collect_clip_features(
         for bgr, rgb, cs_sec, ce_sec in iter_clips_from_video(
             vp, num_frames=num_frames, frame_step=frame_step
         ):
-            has_human, _ = has_human_in_clip(bgr, models.human_model, human_threshold)
+            has_human, _ = has_human_in_clip(
+                bgr, models.human_model, human_threshold
+            )
             if not has_human:
                 skipped_no_human += 1
                 continue
@@ -600,7 +575,9 @@ def write_clips_csv(path: str, metadata: List[Dict[str, Any]]) -> None:
         w.writerows(metadata)
 
 
-def compute_eval_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
+def compute_eval_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray
+) -> Dict[str, Any]:
     tp = int(((y_pred == 1) & (y_true == 1)).sum())
     fp = int(((y_pred == 1) & (y_true == 0)).sum())
     tn = int(((y_pred == 0) & (y_true == 0)).sum())

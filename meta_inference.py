@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from meta_common import (  # type: ignore
+    DEFAULT_STRATEGY,
     PipelineModels,
     PipelineStrategy,
     add_shared_model_args,
@@ -202,7 +203,7 @@ def main() -> None:
     scaler = saved["scaler"]
     pca = saved.get("pca")
     train_metrics = saved["train_metrics"]
-    saved_strategy = saved.get("strategy", "combined")
+    saved_strategy = saved.get("strategy", DEFAULT_STRATEGY.value)
 
     # Validate strategy consistency
     if args.strategy.value != saved_strategy:

@@ -7,7 +7,6 @@ Strategies evaluated:
   A) human_vjepa      — YOLO Human → V-JEPA temporal classification
   B) human_yolo_cls   — YOLO Human → YOLO-CLS frame-level classification
   C) human_weapon_cls — YOLO Human → YOLO Weapon Det → YOLO-CLS
-  D) combined         — All features concatenated (meta-learner)
 
 Usage:
     python pipeline_strategy_eval.py \\
@@ -244,11 +243,11 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    # Load ALL models (combined strategy loads everything)
+    # Load ALL models (strategy=None loads everything)
     models = load_pipeline_models(
         args,
         device,
-        strategy=PipelineStrategy.COMBINED,
+        strategy=None,
     )
 
     # Extract features for all strategies in one pass
