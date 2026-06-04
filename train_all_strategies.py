@@ -71,6 +71,8 @@ def main() -> None:
             "human_vjepa",
             "human_yolo_cls",
             "human_weapon_cls",
+            "weapon_only",
+            "vjepa_weapon",
         ],
         help="Pipeline strategy to train, or 'all' to train all strategies sequentially",
     )
@@ -124,6 +126,8 @@ def main() -> None:
             PipelineStrategy.HUMAN_VJEPA,
             PipelineStrategy.HUMAN_YOLO_CLS,
             PipelineStrategy.HUMAN_WEAPON_CLS,
+            PipelineStrategy.WEAPON_ONLY,
+            PipelineStrategy.VJEPA_WEAPON,
         ]
     else:
         strategies_to_run = [PipelineStrategy(args.strategy)]

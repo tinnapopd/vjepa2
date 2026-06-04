@@ -67,6 +67,8 @@ class PipelineStrategy(str, Enum):
     HUMAN_VJEPA = "human_vjepa"  # Strategy A
     HUMAN_YOLO_CLS = "human_yolo_cls"  # Strategy B
     HUMAN_WEAPON_CLS = "human_weapon_cls"  # Strategy C
+    WEAPON_ONLY = "weapon_only"  # Strategy D — weapon-detector baseline
+    VJEPA_WEAPON = "vjepa_weapon"  # Strategy E — V-JEPA ⊕ weapon detector
 
 
 # Default strategy when none is specified on the CLI or by a saved model.
@@ -82,7 +84,7 @@ def add_strategy_arg(parser: argparse.ArgumentParser) -> None:
         choices=list(PipelineStrategy),
         help=(
             "Pipeline strategy: human_vjepa, human_yolo_cls, "
-            "or human_weapon_cls"
+            "human_weapon_cls, weapon_only, or vjepa_weapon"
         ),
     )
 
@@ -159,12 +161,19 @@ def load_pipeline_models(
     cls_checkpoint = getattr(args, "yolo_violence", None) or ""
     # strategy=None → load every model (used when running multiple strategies).
     load_all = strategy is None
-    needs_vjepa = load_all or strategy == PipelineStrategy.HUMAN_VJEPA
+    needs_vjepa = load_all or strategy in (
+        PipelineStrategy.HUMAN_VJEPA,
+        PipelineStrategy.VJEPA_WEAPON,
+    )
     needs_cls = load_all or strategy in (
         PipelineStrategy.HUMAN_YOLO_CLS,
         PipelineStrategy.HUMAN_WEAPON_CLS,
     )
-    needs_weapon = load_all or strategy == PipelineStrategy.HUMAN_WEAPON_CLS
+    needs_weapon = load_all or strategy in (
+        PipelineStrategy.HUMAN_WEAPON_CLS,
+        PipelineStrategy.WEAPON_ONLY,
+        PipelineStrategy.VJEPA_WEAPON,
+    )
 
     logger.info("Reading probe metadata …")
     num_classes, positive_idx = inspect_probe_metadata(args.probe_weight)
@@ -477,6 +486,8 @@ def extract_strategy_features(
     Strategy A (human_vjepa):      V-JEPA pooled embedding
     Strategy B (human_yolo_cls):   YOLO-CLS penultimate embedding
     Strategy C (human_weapon_cls): Weapon stats + YOLO-CLS embedding
+    Strategy D (weapon_only):      Weapon stats only (integration baseline)
+    Strategy E (vjepa_weapon):     Weapon stats + V-JEPA embedding
     """
     if strategy == PipelineStrategy.HUMAN_VJEPA:
         assert encoder is not None, (
@@ -484,6 +495,30 @@ def extract_strategy_features(
         )
         vjepa_emb = extract_vjepa_embeddings(rgb, encoder, device, pool=True)
         return vjepa_emb.cpu().numpy().astype(np.float32)
+
+    elif strategy == PipelineStrategy.WEAPON_ONLY:
+        assert weapon_model is not None, (
+            "YOLO weapon model required for weapon_only strategy"
+        )
+        _, weapon_stats = detect_weapons_in_clip(
+            bgr, weapon_model, weapon_threshold
+        )
+        return np.array(list(weapon_stats.values()), dtype=np.float32)
+
+    elif strategy == PipelineStrategy.VJEPA_WEAPON:
+        assert encoder is not None, (
+            "V-JEPA encoder required for vjepa_weapon strategy"
+        )
+        assert weapon_model is not None, (
+            "YOLO weapon model required for vjepa_weapon strategy"
+        )
+        vjepa_emb = extract_vjepa_embeddings(rgb, encoder, device, pool=True)
+        vjepa_np = vjepa_emb.cpu().numpy().astype(np.float32)
+        _, weapon_stats = detect_weapons_in_clip(
+            bgr, weapon_model, weapon_threshold
+        )
+        weapon_feat = np.array(list(weapon_stats.values()), dtype=np.float32)
+        return np.concatenate([weapon_feat, vjepa_np])
 
     elif strategy == PipelineStrategy.HUMAN_YOLO_CLS:
         assert cls_model is not None, (

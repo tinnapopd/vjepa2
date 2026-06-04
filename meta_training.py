@@ -27,10 +27,7 @@ import numpy as np
 import torch
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import (
-    GradientBoostingClassifier,
-    RandomForestClassifier,
-)
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import log_loss
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.preprocessing import StandardScaler
@@ -154,16 +151,7 @@ def collect_embeddings_from_csv(
     )
 
 
-def _collect_loss_curve(
-    model: Any,
-    X: np.ndarray,
-    y: np.ndarray,
-) -> List[float]:
-    if isinstance(model, GradientBoostingClassifier):
-        return [
-            float(log_loss(y, proba[:, 1]))
-            for proba in model.staged_predict_proba(X)
-        ]
+def _collect_loss_curve(model: Any) -> List[float]:
     if isinstance(model, XGBClassifier):
         evals = getattr(model, "evals_result_", None) or {}
         return [
@@ -204,12 +192,6 @@ def train_and_evaluate_stacking(
             random_state=random_state,
             class_weight="balanced",
         ),
-        "GradientBoosting": GradientBoostingClassifier(
-            n_estimators=300,
-            max_depth=4,
-            learning_rate=0.05,
-            random_state=random_state,
-        ),
         "XGBoost": XGBClassifier(
             n_estimators=300,
             max_depth=5,
@@ -242,7 +224,7 @@ def train_and_evaluate_stacking(
                 model.fit(X, y, eval_set=[(X, y)], verbose=False)
             else:
                 model.fit(X, y)
-            loss_curve = _collect_loss_curve(model, X, y)
+            loss_curve = _collect_loss_curve(model)
             _log_curve(name, loss_curve, log_loss_every)
 
             results[name] = {
@@ -382,7 +364,7 @@ def main() -> None:
         type=int,
         default=10,
         help="Log per-iteration train logloss every N iters "
-        "(GradientBoosting/XGBoost only; 0 = off)",
+        "(XGBoost only; 0 = off)",
     )
     p.add_argument("--output", type=str, default="stacking_report.json")
     p.add_argument("--output-csv", type=str, default="stacking_clips.csv")
