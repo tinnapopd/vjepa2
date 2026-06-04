@@ -41,6 +41,8 @@ from meta_common import (  # type: ignore
     PipelineStrategy,
     add_shared_model_args,
     add_strategy_arg,
+    add_video_level_args,
+    aggregate_clips_to_videos,
     collect_clip_features,
     compute_eval_metrics,
     load_pipeline_models,
@@ -367,6 +369,7 @@ def main() -> None:
     )
     add_shared_model_args(p)
     add_strategy_arg(p)
+    add_video_level_args(p)
     p.add_argument(
         "--pca-dim",
         type=int,
@@ -462,7 +465,15 @@ def main() -> None:
 
     collect_time = time.time() - t0
     logger.info(f"Embedding collection done in {collect_time:.1f}s")
-    logger.info(f"Raw embedding shape: {X.shape}")
+    logger.info(f"Raw clip embedding shape: {X.shape}")
+
+    # ── Optional: pool clips into one sample per video (V-JEPA convention) ──
+    if args.eval_level == "video":
+        logger.info(f"Aggregating clips → videos (pool={args.video_pool}) …")
+        X, y, metadata = aggregate_clips_to_videos(
+            X, y, metadata, pool=args.video_pool
+        )
+        logger.info(f"Video-level embedding shape: {X.shape}")
 
     # ── Preprocessing: StandardScaler + optional PCA ──
     scaler = StandardScaler()
@@ -541,6 +552,14 @@ def main() -> None:
                 except Exception as e:
                     logger.warning(f"Failed to save cache to {cache_path_val}: {e}")
 
+        if args.eval_level == "video":
+            logger.info(
+                f"Aggregating val clips → videos (pool={args.video_pool}) …"
+            )
+            X_val, y_val, val_metadata = aggregate_clips_to_videos(
+                X_val, y_val, val_metadata, pool=args.video_pool
+            )
+
         X_val_scaled = scaler.transform(X_val)
         X_val_final = pca.transform(X_val_scaled) if pca else X_val_scaled
 
@@ -576,6 +595,8 @@ def main() -> None:
             "model": best_model,
             "model_name": best_name,
             "strategy": args.strategy.value,
+            "eval_level": args.eval_level,
+            "video_pool": args.video_pool,
             "scaler": scaler,
             "pca": pca,
             "pca_dim": args.pca_dim,
@@ -602,6 +623,8 @@ def main() -> None:
             "dataset_csv": os.path.abspath(args.dataset_csv),
             "val_csv": os.path.abspath(args.val_csv) if has_val else None,
             "strategy": args.strategy.value,
+            "eval_level": args.eval_level,
+            "video_pool": args.video_pool,
             "yolo_violence": args.yolo_violence,
             "encoder_weight": args.encoder_weight,
             "probe_weight": args.probe_weight,
@@ -617,7 +640,8 @@ def main() -> None:
             "val_time_sec": round(val_time, 1),
         },
         "dataset_stats": {
-            "train_clips": len(y),
+            "level": args.eval_level,
+            "train_samples": len(y),
             "train_positive": int(y.sum()),
             "train_negative": int(len(y) - y.sum()),
             "n_features": final_dim,
@@ -625,7 +649,7 @@ def main() -> None:
         "results": serializable,
     }
     if has_val:
-        report["dataset_stats"]["val_clips"] = len(y_val)
+        report["dataset_stats"]["val_samples"] = len(y_val)
         report["dataset_stats"]["val_positive"] = int(y_val.sum())
         report["dataset_stats"]["val_negative"] = int(len(y_val) - y_val.sum())
 

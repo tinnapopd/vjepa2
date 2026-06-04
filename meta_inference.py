@@ -30,6 +30,7 @@ from meta_common import (  # type: ignore
     PipelineStrategy,
     add_shared_model_args,
     add_strategy_arg,
+    aggregate_clips_to_videos,
     collect_clip_features,
     compute_eval_metrics,
     load_pipeline_models,
@@ -249,6 +250,17 @@ def main() -> None:
     )
     elapsed = time.time() - t0
 
+    # Match the granularity the model was trained at. Models trained with
+    # --eval-level=video learned on per-video pooled embeddings, so the test
+    # clips must be pooled the same way before scaling/prediction.
+    eval_level = saved.get("eval_level", "clip")
+    video_pool = saved.get("video_pool", "mean")
+    if eval_level == "video":
+        logger.info(f"Aggregating test clips → videos (pool={video_pool}) …")
+        X, y, metadata = aggregate_clips_to_videos(
+            X, y, metadata, pool=video_pool
+        )
+
     # Apply same preprocessing as training
     X_scaled = scaler.transform(X)
     X_final = pca.transform(X_scaled) if pca else X_scaled
@@ -264,6 +276,8 @@ def main() -> None:
             "meta_model": args.meta_model,
             "model_name": model_name,
             "strategy": effective_strategy.value,
+            "eval_level": eval_level,
+            "video_pool": video_pool,
             "raw_dim": saved.get("raw_dim"),
             "final_dim": saved.get("final_dim"),
             "pca_dim": saved.get("pca_dim"),
@@ -276,7 +290,8 @@ def main() -> None:
             "elapsed_sec": round(elapsed, 1),
         },
         "dataset_stats": {
-            "test_clips": len(y),
+            "level": eval_level,
+            "test_samples": len(y),
             "test_positive": int(y.sum()),
             "test_negative": int(len(y) - y.sum()),
         },

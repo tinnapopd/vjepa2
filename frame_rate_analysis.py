@@ -43,6 +43,7 @@ from meta_common import (  # type: ignore
     DEFAULT_STRATEGY,
     PipelineStrategy,
     add_shared_model_args,
+    aggregate_clips_to_videos,
     compute_eval_metrics,
     load_pipeline_models,
 )
@@ -107,8 +108,8 @@ def collect_test_video_paths(test_dataset: str) -> List[str]:
 
 def _val_features(
     args: argparse.Namespace, models: Any, device: str, frame_step: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Val (X, y) at a given frame_step, reusing cache when present."""
+) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+    """Val (X, y, metadata) at a given frame_step, reusing cache when present."""
     cache_path = None
     if args.cache_dir:
         os.makedirs(args.cache_dir, exist_ok=True)
@@ -118,10 +119,10 @@ def _val_features(
         try:
             with open(cache_path, "rb") as f:
                 cached = pickle.load(f)
-            return cached["X"], cached["y"]
+            return cached["X"], cached["y"], cached.get("metadata", [])
         except Exception as e:
             logger.warning(f"  cache load failed ({e}); extracting raw.")
-    X, y, _ = collect_embeddings_from_csv(
+    X, y, metadata = collect_embeddings_from_csv(
         args.val_csv, models, device,
         num_frames=args.num_frames, frame_step=frame_step,
         human_threshold=args.human_threshold,
@@ -131,16 +132,16 @@ def _val_features(
     if cache_path:
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({"X": X, "y": y, "metadata": []}, f)
+                pickle.dump({"X": X, "y": y, "metadata": metadata}, f)
         except Exception as e:
             logger.warning(f"  failed to save val cache: {e}")
-    return X, y
+    return X, y, metadata
 
 
 def _test_features(
     args: argparse.Namespace, models: Any, device: str, frame_step: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Test (X, y) at a given frame_step, caching the result."""
+) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+    """Test (X, y, metadata) at a given frame_step, caching the result."""
     cache_path = None
     if args.cache_dir:
         os.makedirs(args.cache_dir, exist_ok=True)
@@ -153,10 +154,10 @@ def _test_features(
         try:
             with open(cache_path, "rb") as f:
                 cached = pickle.load(f)
-            return cached["X"], cached["y"]
+            return cached["X"], cached["y"], cached.get("metadata", [])
         except Exception as e:
             logger.warning(f"  cache load failed ({e}); extracting raw.")
-    X, y, _ = collect_embeddings(
+    X, y, metadata = collect_embeddings(
         args.test_dataset, models, device,
         num_frames=args.num_frames, frame_step=frame_step,
         human_threshold=args.human_threshold,
@@ -166,10 +167,35 @@ def _test_features(
     if cache_path:
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({"X": X, "y": y, "metadata": []}, f)
+                pickle.dump({"X": X, "y": y, "metadata": metadata}, f)
         except Exception as e:
             logger.warning(f"  failed to save test cache: {e}")
-    return X, y
+    return X, y, metadata
+
+
+def _maybe_aggregate(
+    X: np.ndarray,
+    y: np.ndarray,
+    metadata: List[Dict[str, Any]],
+    eval_level: str,
+    video_pool: str,
+    name: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Pool clips → videos when the model expects video-level features.
+
+    Raises a clear error if a stale cache lacks the per-clip metadata needed
+    to group by video (fix: re-run with --force-rebuild).
+    """
+    if eval_level != "video":
+        return X, y
+    if not metadata:
+        raise SystemExit(
+            f"Model was trained with eval_level=video but the cached {name} "
+            "features have no per-clip metadata to group by video. "
+            "Re-run with --force-rebuild to rebuild the feature cache."
+        )
+    Xv, yv, _ = aggregate_clips_to_videos(X, y, metadata, pool=video_pool)
+    return Xv, yv
 
 
 def evaluate(
@@ -347,6 +373,8 @@ def main() -> None:
 
     rows: List[Dict[str, Any]] = []
     strategy_label = "n/a"
+    eval_level = "clip"
+    video_pool = "mean"
 
     if not args.skip_sweep:
         # Load the trained meta-model (scaler/pca/clf/strategy).
@@ -361,8 +389,11 @@ def main() -> None:
         )
         args.strategy = strategy  # needed by get_cache_path / extraction
         strategy_label = strategy.value
+        eval_level = saved.get("eval_level", "clip")
+        video_pool = saved.get("video_pool", "mean")
         logger.info(
-            f"  model={saved.get('model_name')} strategy={strategy.value}"
+            f"  model={saved.get('model_name')} strategy={strategy.value} "
+            f"eval_level={eval_level} video_pool={video_pool}"
         )
 
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -377,8 +408,14 @@ def main() -> None:
         for fs in frame_steps:
             logger.info(f"── frame_step={fs} ──")
             args.frame_step = fs  # drives get_cache_path key + extraction
-            X_val, y_val = _val_features(args, models, device, fs)
-            X_test, y_test = _test_features(args, models, device, fs)
+            X_val, y_val, md_val = _val_features(args, models, device, fs)
+            X_test, y_test, md_test = _test_features(args, models, device, fs)
+            X_val, y_val = _maybe_aggregate(
+                X_val, y_val, md_val, eval_level, video_pool, "val"
+            )
+            X_test, y_test = _maybe_aggregate(
+                X_test, y_test, md_test, eval_level, video_pool, "test"
+            )
             val_m = evaluate(clf, scaler, pca, X_val, y_val)
             test_m = evaluate(clf, scaler, pca, X_test, y_test)
             logger.info(
@@ -403,6 +440,8 @@ def main() -> None:
             "val_csv": os.path.abspath(args.val_csv),
             "test_dataset": os.path.abspath(args.test_dataset),
             "meta_model": args.meta_model,
+            "eval_level": eval_level,
+            "video_pool": video_pool,
             "num_frames": args.num_frames,
             "frame_steps": args.frame_steps if not args.skip_sweep else None,
         },

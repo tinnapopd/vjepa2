@@ -566,6 +566,92 @@ def collect_clip_features(
     return X, y, metadata
 
 
+def add_video_level_args(parser: argparse.ArgumentParser) -> None:
+    """Register args controlling clip-vs-video level training/evaluation."""
+    parser.add_argument(
+        "--eval-level",
+        type=str,
+        default="video",
+        choices=["clip", "video"],
+        help=(
+            "Granularity for training + metrics. 'video' (default) pools the "
+            "per-clip embeddings of each source video into one sample, "
+            "matching V-JEPA's one-prediction-per-video convention. 'clip' "
+            "keeps every clip as an independent sample (legacy behaviour)."
+        ),
+    )
+    parser.add_argument(
+        "--video-pool",
+        type=str,
+        default="mean",
+        choices=["mean", "max"],
+        help=(
+            "How to pool per-clip embeddings into a video embedding when "
+            "--eval-level=video. 'mean' (default) averages clips; 'max' takes "
+            "the per-dimension maximum."
+        ),
+    )
+
+
+def aggregate_clips_to_videos(
+    X: np.ndarray,
+    y: np.ndarray,
+    metadata: List[Dict[str, Any]],
+    pool: str = "mean",
+) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+    """Collapse per-clip features into one feature vector per source video.
+
+    Clips are grouped by their ``metadata['video']`` path and their embeddings
+    are pooled into a single video-level embedding. This mirrors V-JEPA's
+    video-classification eval, which concatenates all of a video's clip tokens
+    and pools them into one representation before classifying (one prediction
+    per video). All clips of a video share the same ground-truth label, so the
+    video label is taken from the (rounded) mean of the clip labels.
+
+    Videos whose clips were all filtered out upstream (e.g. no human detected)
+    simply do not appear here, exactly as in the clip-level path.
+    """
+    groups: "Dict[str, List[int]]" = {}
+    order: List[str] = []
+    for i, m in enumerate(metadata):
+        vp = m["video"]
+        if vp not in groups:
+            groups[vp] = []
+            order.append(vp)
+        groups[vp].append(i)
+
+    feats: List[np.ndarray] = []
+    labels: List[int] = []
+    meta: List[Dict[str, Any]] = []
+    for vp in order:
+        idxs = groups[vp]
+        clip_feats = X[idxs]
+        if pool == "max":
+            pooled = clip_feats.max(axis=0)
+        else:
+            pooled = clip_feats.mean(axis=0)
+        lbl = int(round(float(np.mean(y[idxs]))))
+        feats.append(pooled.astype(np.float32))
+        labels.append(lbl)
+        meta.append(
+            {
+                "video": vp,
+                "video_label": metadata[idxs[0]].get("video_label"),
+                "n_clips": len(idxs),
+                "ground_truth": lbl,
+            }
+        )
+
+    Xv = np.stack(feats, axis=0)
+    yv = np.array(labels, dtype=np.int32)
+    logger.info(
+        f"Aggregated {len(metadata)} clips → {len(yv)} videos "
+        f"({int(yv.sum())} positive, {len(yv) - int(yv.sum())} negative), "
+        f"pool={pool}"
+    )
+    return Xv, yv, meta
+
+
 def write_clips_csv(path: str, metadata: List[Dict[str, Any]]) -> None:
     if not metadata:
         return

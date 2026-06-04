@@ -24,7 +24,7 @@ import logging
 import os
 import pickle
 import warnings
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -38,6 +38,8 @@ from meta_common import (  # type: ignore
     PipelineStrategy,
     add_shared_model_args,
     add_strategy_arg,
+    add_video_level_args,
+    aggregate_clips_to_videos,
     load_pipeline_models,
 )
 from meta_inference import collect_embeddings  # type: ignore
@@ -56,8 +58,8 @@ def _load_or_extract_val(
     args: argparse.Namespace,
     models: Any,
     device: str,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (X, y) for the val CSV, reusing cache_features/ if present."""
+) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+    """Return (X, y, metadata) for the val CSV, reusing cache_features/."""
     cache_path = None
     if args.cache_dir:
         os.makedirs(args.cache_dir, exist_ok=True)
@@ -68,12 +70,12 @@ def _load_or_extract_val(
         try:
             with open(cache_path, "rb") as f:
                 cached = pickle.load(f)
-            return cached["X"], cached["y"]
+            return cached["X"], cached["y"], cached.get("metadata", [])
         except Exception as e:
             logger.warning(f"Cache load failed ({e}); extracting raw.")
 
     logger.info("Extracting val embeddings …")
-    X, y, _ = collect_embeddings_from_csv(
+    X, y, metadata = collect_embeddings_from_csv(
         args.val_csv,
         models,
         device,
@@ -86,18 +88,18 @@ def _load_or_extract_val(
     if cache_path:
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({"X": X, "y": y, "metadata": []}, f)
+                pickle.dump({"X": X, "y": y, "metadata": metadata}, f)
         except Exception as e:
             logger.warning(f"Failed to save val cache: {e}")
-    return X, y
+    return X, y, metadata
 
 
 def _load_or_extract_test(
     args: argparse.Namespace,
     models: Any,
     device: str,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (X, y) for the test dataset directory, caching the result."""
+) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+    """Return (X, y, metadata) for the test dataset dir, caching the result."""
     cache_path = None
     if args.cache_dir:
         os.makedirs(args.cache_dir, exist_ok=True)
@@ -113,12 +115,12 @@ def _load_or_extract_test(
         try:
             with open(cache_path, "rb") as f:
                 cached = pickle.load(f)
-            return cached["X"], cached["y"]
+            return cached["X"], cached["y"], cached.get("metadata", [])
         except Exception as e:
             logger.warning(f"Cache load failed ({e}); extracting raw.")
 
     logger.info("Extracting test embeddings …")
-    X, y, _ = collect_embeddings(
+    X, y, metadata = collect_embeddings(
         args.test_dataset,
         models,
         device,
@@ -131,10 +133,10 @@ def _load_or_extract_test(
     if cache_path:
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({"X": X, "y": y, "metadata": []}, f)
+                pickle.dump({"X": X, "y": y, "metadata": metadata}, f)
         except Exception as e:
             logger.warning(f"Failed to save test cache: {e}")
-    return X, y
+    return X, y, metadata
 
 
 def domain_classifier_auc(
@@ -260,6 +262,7 @@ def main() -> None:
     )
     add_shared_model_args(p)
     add_strategy_arg(p)
+    add_video_level_args(p)
     p.add_argument(
         "--cache-dir",
         type=str,
@@ -286,10 +289,28 @@ def main() -> None:
 
     models = load_pipeline_models(args, device, strategy=args.strategy)
 
-    X_val, y_val = _load_or_extract_val(args, models, device)
-    X_test, y_test = _load_or_extract_test(args, models, device)
+    X_val, y_val, md_val = _load_or_extract_val(args, models, device)
+    X_test, y_test, md_test = _load_or_extract_test(args, models, device)
+
+    # Pool clips → one point per video so each scatter point is a video,
+    # matching the video-level training/eval convention.
+    if args.eval_level == "video":
+        for name, md in (("val", md_val), ("test", md_test)):
+            if not md:
+                raise SystemExit(
+                    f"--eval-level=video needs per-clip metadata for {name}, "
+                    "but the cache has none. Re-run with --force-rebuild."
+                )
+        X_val, y_val, _ = aggregate_clips_to_videos(
+            X_val, y_val, md_val, pool=args.video_pool
+        )
+        X_test, y_test, _ = aggregate_clips_to_videos(
+            X_test, y_test, md_test, pool=args.video_pool
+        )
+
+    unit = "videos" if args.eval_level == "video" else "clips"
     logger.info(
-        f"val: {X_val.shape[0]} clips | test: {X_test.shape[0]} clips | "
+        f"val: {X_val.shape[0]} {unit} | test: {X_test.shape[0]} {unit} | "
         f"dim={X_val.shape[1]}"
     )
 
@@ -334,13 +355,16 @@ def main() -> None:
             "val_csv": os.path.abspath(args.val_csv),
             "test_dataset": os.path.abspath(args.test_dataset),
             "strategy": args.strategy.value,
+            "eval_level": args.eval_level,
+            "video_pool": args.video_pool,
             "num_frames": args.num_frames,
             "frame_step": args.frame_step,
             "raw_dim": int(X_val.shape[1]),
         },
         "stats": {
-            "val_clips": int(len(y_val)),
-            "test_clips": int(len(y_test)),
+            "level": args.eval_level,
+            "val_samples": int(len(y_val)),
+            "test_samples": int(len(y_test)),
             "val_positive": int(y_val.sum()),
             "test_positive": int(y_test.sum()),
         },

@@ -27,6 +27,8 @@ from sklearn.preprocessing import StandardScaler
 from meta_common import (  # type: ignore
     PipelineStrategy,
     add_shared_model_args,
+    add_video_level_args,
+    aggregate_clips_to_videos,
     load_pipeline_models,
 )
 from meta_training import (  # type: ignore
@@ -59,6 +61,7 @@ def main() -> None:
         help="Path to validation CSV (same format).",
     )
     add_shared_model_args(p)
+    add_video_level_args(p)
     p.add_argument(
         "--strategy",
         type=str,
@@ -193,6 +196,13 @@ def main() -> None:
 
         raw_dim = X.shape[1]
 
+        # ── 1b. Pool clips → one sample per video (V-JEPA convention) ──
+        if args.eval_level == "video":
+            logger.info(f"Aggregating clips → videos (pool={args.video_pool}) …")
+            X, y, metadata = aggregate_clips_to_videos(
+                X, y, metadata, pool=args.video_pool
+            )
+
         # ── 2. Preprocessing ──
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -268,6 +278,14 @@ def main() -> None:
                     except Exception as e:
                         logger.warning(f"Failed to save cache to {cache_path_val}: {e}")
 
+            if args.eval_level == "video":
+                logger.info(
+                    f"Aggregating val clips → videos (pool={args.video_pool}) …"
+                )
+                X_val, y_val, val_metadata = aggregate_clips_to_videos(
+                    X_val, y_val, val_metadata, pool=args.video_pool
+                )
+
             X_val_scaled = scaler.transform(X_val)
             X_val_final = pca.transform(X_val_scaled) if pca else X_val_scaled
 
@@ -301,6 +319,8 @@ def main() -> None:
                 "model": best_model,
                 "model_name": best_name,
                 "strategy": strat.value,
+                "eval_level": args.eval_level,
+                "video_pool": args.video_pool,
                 "scaler": scaler,
                 "pca": pca,
                 "pca_dim": args.pca_dim,
@@ -398,6 +418,8 @@ def main() -> None:
         "config": {
             "dataset_csv": os.path.abspath(args.dataset_csv),
             "val_csv": os.path.abspath(args.val_csv) if has_val else None,
+            "eval_level": args.eval_level,
+            "video_pool": args.video_pool,
             "pca_dim": args.pca_dim,
             "n_folds": args.n_folds,
             "device": device,
