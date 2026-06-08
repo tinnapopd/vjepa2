@@ -83,19 +83,28 @@ def _extract_human_bboxes(
     human_threshold: float,
 ) -> List[Tuple[int, int, int, int]]:
     results = human_model.predict(
-        frame, verbose=False, conf=human_threshold, classes=[0],
+        frame,
+        verbose=False,
+        conf=human_threshold,
+        classes=[0],
     )
     bboxes: List[Tuple[int, int, int, int]] = []
     for r in results:
         if r.boxes is not None and len(r.boxes) > 0:
             for box in r.boxes.xyxy.cpu().numpy().astype(int):
-                bboxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+                bboxes.append(
+                    (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
+                )
     return bboxes
 
 
 def _pad_bbox(
-    x1: int, y1: int, x2: int, y2: int,
-    img_h: int, img_w: int,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    img_h: int,
+    img_w: int,
     pad_ratio: float = 0.1,
 ) -> Tuple[int, int, int, int]:
     """Expand a bounding box by *pad_ratio* on each side, clamped to image."""
@@ -931,9 +940,7 @@ def main() -> None:
         )
     else:
         model_positive_idx = model_num_classes - 1
-        class_label_names = [
-            f"class_{i}" for i in range(model_num_classes)
-        ]
+        class_label_names = [f"class_{i}" for i in range(model_num_classes)]
         logger.warning(
             f"Detected {model_num_classes}-class probe; "
             f"using positive_idx={model_positive_idx}"
@@ -947,9 +954,7 @@ def main() -> None:
     )
     msg = classifier.load_state_dict(probe_dict, strict=False)
     if msg.missing_keys:
-        logger.warning(
-            f"Missing keys in probe checkpoint: {msg.missing_keys}"
-        )
+        logger.warning(f"Missing keys in probe checkpoint: {msg.missing_keys}")
     if msg.unexpected_keys:
         logger.warning(
             f"Unexpected keys in probe checkpoint: {msg.unexpected_keys}"

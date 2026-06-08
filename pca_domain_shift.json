@@ -1,0 +1,27 @@
+{
+  "config": {
+    "val_csv": "/tf/data/dataset-2classes/val.csv",
+    "test_dataset": "/tf/data/test-dataset",
+    "strategy": "human_vjepa",
+    "eval_level": "video",
+    "video_pool": "mean",
+    "num_frames": 16,
+    "frame_step": 4,
+    "raw_dim": 1664
+  },
+  "stats": {
+    "level": "video",
+    "val_samples": 189,
+    "test_samples": 182,
+    "val_positive": 100,
+    "test_positive": 63
+  },
+  "domain_shift": {
+    "domain_classifier_auc": 0.9002122216407931,
+    "pc1_var_ratio": 0.13873742520809174,
+    "pc2_var_ratio": 0.09797590225934982,
+    "pc1_mean_gap": 17.368194580078125,
+    "pc2_mean_gap": 4.104375839233398
+  },
+  "plot": "pca_domain_shift.png"
+}

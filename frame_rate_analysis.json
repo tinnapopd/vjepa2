@@ -1,0 +1,140 @@
+{
+  "config": {
+    "val_csv": "/tf/data/dataset-2classes/val.csv",
+    "test_dataset": "/tf/data/test-dataset",
+    "meta_model": "meta_model_human_vjepa.pkl",
+    "eval_level": "video",
+    "video_pool": "mean",
+    "num_frames": 16,
+    "frame_steps": "2,4,8,16"
+  },
+  "native_fps": {
+    "val": {
+      "n": 200,
+      "mean": 26.88,
+      "median": 29.87,
+      "min": 15.0,
+      "max": 30.0,
+      "std": 3.66
+    },
+    "test": {
+      "n": 189,
+      "mean": 28.42,
+      "median": 30.0,
+      "min": 9.99,
+      "max": 30.0,
+      "std": 2.75
+    }
+  },
+  "frame_step_sweep": [
+    {
+      "frame_step": 2,
+      "val": {
+        "tp": 89,
+        "fp": 12,
+        "tn": 82,
+        "fn": 11,
+        "precision": 0.8812,
+        "recall": 0.89,
+        "f1": 0.8856,
+        "f2": 0.8882,
+        "specificity": 0.8723,
+        "accuracy": 0.8814
+      },
+      "test": {
+        "tp": 24,
+        "fp": 49,
+        "tn": 72,
+        "fn": 38,
+        "precision": 0.3288,
+        "recall": 0.3871,
+        "f1": 0.3556,
+        "f2": 0.3738,
+        "specificity": 0.595,
+        "accuracy": 0.5246
+      }
+    },
+    {
+      "frame_step": 4,
+      "val": {
+        "tp": 95,
+        "fp": 12,
+        "tn": 77,
+        "fn": 5,
+        "precision": 0.8879,
+        "recall": 0.95,
+        "f1": 0.9179,
+        "f2": 0.9369,
+        "specificity": 0.8652,
+        "accuracy": 0.9101
+      },
+      "test": {
+        "tp": 25,
+        "fp": 51,
+        "tn": 68,
+        "fn": 38,
+        "precision": 0.3289,
+        "recall": 0.3968,
+        "f1": 0.3597,
+        "f2": 0.3811,
+        "specificity": 0.5714,
+        "accuracy": 0.511
+      }
+    },
+    {
+      "frame_step": 8,
+      "val": {
+        "tp": 94,
+        "fp": 19,
+        "tn": 66,
+        "fn": 4,
+        "precision": 0.8319,
+        "recall": 0.9592,
+        "f1": 0.891,
+        "f2": 0.9307,
+        "specificity": 0.7765,
+        "accuracy": 0.8743
+      },
+      "test": {
+        "tp": 22,
+        "fp": 42,
+        "tn": 61,
+        "fn": 43,
+        "precision": 0.3438,
+        "recall": 0.3385,
+        "f1": 0.3411,
+        "f2": 0.3395,
+        "specificity": 0.5922,
+        "accuracy": 0.494
+      }
+    },
+    {
+      "frame_step": 16,
+      "val": {
+        "tp": 56,
+        "fp": 10,
+        "tn": 14,
+        "fn": 1,
+        "precision": 0.8485,
+        "recall": 0.9825,
+        "f1": 0.9106,
+        "f2": 0.9524,
+        "specificity": 0.5833,
+        "accuracy": 0.8642
+      },
+      "test": {
+        "tp": 5,
+        "fp": 7,
+        "tn": 28,
+        "fn": 31,
+        "precision": 0.4167,
+        "recall": 0.1389,
+        "f1": 0.2083,
+        "f2": 0.1603,
+        "specificity": 0.8,
+        "accuracy": 0.4648
+      }
+    }
+  ],
+  "plot": "frame_rate_analysis.png"
+}

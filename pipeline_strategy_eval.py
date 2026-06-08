@@ -20,7 +20,7 @@ import logging
 import os
 import time
 import warnings
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -57,6 +57,7 @@ def collect_all_strategies(
     frame_step: int,
     human_threshold: float = 0.3,
     weapon_threshold: float = 0.41,
+    strategies: Optional[List[PipelineStrategy]] = None,
 ) -> Dict[str, Any]:
     """Walk the dataset, extract features for ALL strategies in one pass.
 
@@ -65,7 +66,8 @@ def collect_all_strategies(
       - metadata: list of per-clip metadata dicts
       - skipped_no_human: int
     """
-    strategies = list(PipelineStrategy)
+    if strategies is None:
+        strategies = list(PipelineStrategy)
 
     # Accumulators per strategy
     features: Dict[str, List[np.ndarray]] = {s.value: [] for s in strategies}
@@ -229,6 +231,12 @@ def main() -> None:
         help="Path to test dataset (violent/ + non-violent/ subdirs)",
     )
     add_shared_model_args(p)
+    p.add_argument(
+        "--strategy",
+        type=str,
+        default="all",
+        help="Specific strategy to evaluate (e.g., human_vjepa). Default is 'all'.",
+    )
     p.add_argument("--output", type=str, default="strategy_eval_report.json")
     p.add_argument("--output-csv", type=str, default="strategy_eval_clips.csv")
     args = p.parse_args()
@@ -243,11 +251,18 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    # Load ALL models (strategy=None loads everything)
+    eval_strategies = list(PipelineStrategy)
+    if args.strategy != "all":
+        try:
+            eval_strategies = [PipelineStrategy(args.strategy)]
+        except ValueError:
+            raise SystemExit(f"Invalid strategy: {args.strategy}")
+
+    # Load required models (strategy=None loads everything)
     models = load_pipeline_models(
         args,
         device,
-        strategy=None,
+        strategy=eval_strategies[0] if len(eval_strategies) == 1 else None,
     )
 
     # Extract features for all strategies in one pass
@@ -261,6 +276,7 @@ def main() -> None:
         frame_step=args.frame_step,
         human_threshold=args.human_threshold,
         weapon_threshold=args.weapon_threshold,
+        strategies=eval_strategies,
     )
     elapsed = time.time() - t0
     logger.info(f"Feature extraction done in {elapsed:.1f}s")
