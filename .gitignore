@@ -53,3 +53,5 @@ trained-models/*
 # Results
 results/*
 *report.json
+*.csv
+anomalous_video_paths.txt

@@ -465,11 +465,11 @@ def run_one_epoch(
 
             # Forward and prediction
             with torch.no_grad():
-                outputs = encoder(clips, clip_indices)
+                features = encoder(clips, clip_indices)
                 if not training:
-                    outputs = [[c(o) for o in outputs] for c in classifiers]
+                    outputs = [[c(o) for o in features] for c in classifiers]
             if training:
-                outputs = [[c(o) for o in outputs] for c in classifiers]
+                outputs = [[c(o) for o in features] for c in classifiers]
 
         # Compute loss
         losses = [
@@ -506,15 +506,16 @@ def run_one_epoch(
                 ).sum()
 
         if training:
+            bw_losses = losses
             if use_bfloat16:
                 [
                     [s.scale(lij).backward() for lij in li]
-                    for s, li in zip(scaler, losses)
+                    for s, li in zip(scaler, bw_losses)
                 ]
                 [s.step(o) for s, o in zip(scaler, optimizer)]
                 [s.update() for s in scaler]
             else:
-                [[lij.backward() for lij in li] for li in losses]
+                [[lij.backward() for lij in li] for li in bw_losses]
                 [o.step() for o in optimizer]
             [o.zero_grad() for o in optimizer]
 
@@ -536,6 +537,7 @@ def run_one_epoch(
                 value=_agg_loss.min(),
                 iteration=global_step,
             )
+
             # -- Step-level per-class accuracy
             for cls_id in range(num_classes):
                 if class_total[cls_id] > 0:
