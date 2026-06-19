@@ -1,32 +1,37 @@
-cpus_per_task: 12
 eval_name: video_classification_frozen
+folder: /tf/data/outputs/evals_2_1/vitG-384/weaponized_2cls_switch
+resume_checkpoint: false
+tag: weaponized-2cls-vitg16-384-switch
+nodes: 1
+tasks_per_node: 1
+cpus_per_task: 12
+num_workers: 8
+snapshot_freq: 5
+
 experiment:
   classifier:
     num_heads: 16
     num_probe_blocks: 4
+
   data:
-    dataset_train: /tf/data/dataset-2classes/train_balanced.csv
     dataset_type: VideoDataset
-    dataset_val: /tf/data/test-dataset/val_balanced.csv
-    frame_step: 4
-    frames_per_clip: 16
+    dataset_train: /tf/data/dataset-2classes/train.csv
+    dataset_val: /tf/data/test-dataset/val.csv
     num_classes: 2
+    resolution: 384
+    frames_per_clip: 16
+    frame_step: 4
     num_segments: 1
     num_views_per_segment: 3
-    resolution: 384
+
   optimization:
-    batch_size: 4
-    multihead_kwargs:
-    - final_lr: 0.0
-      final_weight_decay: 0.01
-      lr: 0.001
-      start_lr: 0.001
-      warmup: 0.0
-      weight_decay: 0.01
     num_epochs: 5
+    batch_size: 4
     use_bfloat16: true
     use_pos_embed: false
-folder: /tf/data/outputs/evals_2_1/vitG-384/weaponized_2cls_switch
+    multihead_kwargs:
+      - { weight_decay: 0.01, final_weight_decay: 0.01, lr: 0.001,  start_lr: 0.001,  final_lr: 0.0, warmup: 0.0 }
+
 model_kwargs:
   checkpoint: /tf/data/pretrained-models/vjepa2_1_vitG_384.pt
   module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
@@ -42,9 +47,3 @@ model_kwargs:
   wrapper_kwargs:
     max_frames: 128
     use_pos_embed: false
-nodes: 1
-num_workers: 8
-resume_checkpoint: false
-snapshot_freq: 5
-tag: weaponized-2cls-vitg16-384-switch
-tasks_per_node: 1

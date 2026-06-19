@@ -41,6 +41,7 @@ from meta_inference import (  # type: ignore
     find_videos,
     load_labels,
 )
+from meta_training import parse_dataset_csv  # type: ignore
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 logging.basicConfig()
@@ -49,7 +50,8 @@ logger.setLevel(logging.INFO)
 
 
 def collect_all_strategies(
-    dataset_dir: str,
+    dataset_dir: Optional[str],
+    csv_path: Optional[str],
     models: PipelineModels,
     device: str,
     *,
@@ -59,7 +61,7 @@ def collect_all_strategies(
     weapon_threshold: float = 0.41,
     strategies: Optional[List[PipelineStrategy]] = None,
 ) -> Dict[str, Any]:
-    """Walk the dataset, extract features for ALL strategies in one pass.
+    """Walk the dataset (either directory or CSV list), extract features for ALL strategies.
 
     Returns a dict with:
       - per_strategy: {strategy_name: {"X": ndarray, "y": ndarray}}
@@ -75,22 +77,13 @@ def collect_all_strategies(
     metadata: List[Dict[str, Any]] = []
     skipped_no_human = 0
 
-    for folder, is_pos_folder in [("violent", True), ("non-violent", False)]:
-        vdir = os.path.join(dataset_dir, folder, "videos")
-        ldir = os.path.join(dataset_dir, folder, "labels")
-        if not os.path.isdir(vdir):
-            logger.warning(f"Not found: {vdir}")
-            continue
-        vpaths = find_videos(vdir)
-        logger.info(f"Found {len(vpaths)} videos in {folder}/videos/")
+    if csv_path:
+        entries = parse_dataset_csv(csv_path)
+        logger.info(f"Loaded {len(entries)} videos from {csv_path}")
 
-        for vi, vp in enumerate(vpaths):
-            vname = os.path.relpath(vp, dataset_dir)
-            logger.info(f"  [{vi + 1}/{len(vpaths)}] {vname}")
-            lpath = os.path.join(
-                ldir, f"{os.path.splitext(os.path.basename(vp))[0]}.csv"
-            )
-            labels = load_labels(lpath)
+        for vi, (vp, video_label) in enumerate(entries):
+            vname = os.path.basename(vp)
+            logger.info(f"  [{vi + 1}/{len(entries)}] {vname}")
 
             for bgr, rgb, cs_sec, ce_sec in iter_clips_from_video(
                 vp, num_frames=num_frames, frame_step=frame_step
@@ -103,19 +96,15 @@ def collect_all_strategies(
                     skipped_no_human += 1
                     continue
 
-                # Ground truth
-                if is_pos_folder and clip_overlaps_any_label(
-                    cs_sec, ce_sec, labels
-                ):
-                    gt = 1
-                else:
-                    gt = 0
+                # Ground truth: 1 if video_label matches model's positive_idx, else 0
+                gt = 1 if video_label == models.positive_idx else 0
                 all_labels.append(gt)
 
+                folder_name = "weaponized" if video_label == models.positive_idx else "background"
                 metadata.append(
                     {
-                        "video": vname,
-                        "folder": folder,
+                        "video": vp,
+                        "folder": folder_name,
                         "start_sec": round(cs_sec, 2),
                         "end_sec": round(ce_sec, 2),
                         "ground_truth": gt,
@@ -135,6 +124,70 @@ def collect_all_strategies(
                         weapon_threshold=weapon_threshold,
                     )
                     features[strat.value].append(emb)
+
+    elif dataset_dir:
+        for folder, is_pos_folder in [("violent", True), ("non-violent", False)]:
+            vdir = os.path.join(dataset_dir, folder, "videos")
+            ldir = os.path.join(dataset_dir, folder, "labels")
+            if not os.path.isdir(vdir):
+                logger.warning(f"Not found: {vdir}")
+                continue
+            vpaths = find_videos(vdir)
+            logger.info(f"Found {len(vpaths)} videos in {folder}/videos/")
+
+            for vi, vp in enumerate(vpaths):
+                vname = os.path.relpath(vp, dataset_dir)
+                logger.info(f"  [{vi + 1}/{len(vpaths)}] {vname}")
+                lpath = os.path.join(
+                    ldir, f"{os.path.splitext(os.path.basename(vp))[0]}.csv"
+                )
+                labels = load_labels(lpath)
+
+                for bgr, rgb, cs_sec, ce_sec in iter_clips_from_video(
+                    vp, num_frames=num_frames, frame_step=frame_step
+                ):
+                    # Phase 1: Human gate
+                    has_human, _ = has_human_in_clip(
+                        bgr, models.human_model, human_threshold
+                    )
+                    if not has_human:
+                        skipped_no_human += 1
+                        continue
+
+                    # Ground truth
+                    if is_pos_folder and clip_overlaps_any_label(
+                        cs_sec, ce_sec, labels
+                    ):
+                        gt = 1
+                    else:
+                        gt = 0
+                    all_labels.append(gt)
+
+                    metadata.append(
+                        {
+                            "video": vname,
+                            "folder": folder,
+                            "start_sec": round(cs_sec, 2),
+                            "end_sec": round(ce_sec, 2),
+                            "ground_truth": gt,
+                        }
+                    )
+
+                    # Phase 2: Extract features for each strategy
+                    for strat in strategies:
+                        emb = extract_strategy_features(
+                            strat,
+                            rgb,
+                            bgr,
+                            models.encoder,
+                            models.cls_model,
+                            device,
+                            weapon_model=models.weapon_model,
+                            weapon_threshold=weapon_threshold,
+                        )
+                        features[strat.value].append(emb)
+    else:
+        raise ValueError("Either dataset_dir or csv_path must be provided")
 
     if skipped_no_human:
         logger.info(f"Skipped {skipped_no_human} clips (no human detected)")
@@ -218,6 +271,7 @@ def print_comparison(
     print("=" * 82 + "\n")
 
 
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=(
@@ -227,8 +281,14 @@ def main() -> None:
     p.add_argument(
         "--test-dataset",
         type=str,
-        required=True,
+        default=None,
         help="Path to test dataset (violent/ + non-violent/ subdirs)",
+    )
+    p.add_argument(
+        "--test-csv",
+        type=str,
+        default=None,
+        help="Path to test CSV mapping video files to class labels",
     )
     add_shared_model_args(p)
     p.add_argument(
@@ -241,12 +301,16 @@ def main() -> None:
     p.add_argument("--output-csv", type=str, default="strategy_eval_clips.csv")
     args = p.parse_args()
 
+    if not args.test_dataset and not args.test_csv:
+        raise SystemExit("Error: Must specify either --test-dataset or --test-csv")
+
     # Validate dataset
-    for sub in ("violent/videos", "non-violent/videos"):
-        if not os.path.isdir(os.path.join(args.test_dataset, sub)):
-            raise SystemExit(
-                f"Error: not found: {os.path.join(args.test_dataset, sub)}"
-            )
+    if args.test_dataset:
+        for sub in ("violent/videos", "non-violent/videos"):
+            if not os.path.isdir(os.path.join(args.test_dataset, sub)):
+                raise SystemExit(
+                    f"Error: not found: {os.path.join(args.test_dataset, sub)}"
+                )
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
@@ -270,6 +334,7 @@ def main() -> None:
     t0 = time.time()
     data = collect_all_strategies(
         args.test_dataset,
+        args.test_csv,
         models,
         device,
         num_frames=args.num_frames,
@@ -327,7 +392,8 @@ def main() -> None:
     # Save report
     report: Dict[str, Any] = {
         "config": {
-            "test_dataset": os.path.abspath(args.test_dataset),
+            "test_dataset": os.path.abspath(args.test_dataset) if args.test_dataset else None,
+            "test_csv": os.path.abspath(args.test_csv) if args.test_csv else None,
             "yolo_violence": args.yolo_violence,
             "encoder_weight": args.encoder_weight,
             "num_frames": args.num_frames,
